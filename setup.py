@@ -18,15 +18,15 @@ try:
     with open(readme_file, encoding="utf-8") as f:
         long_description = f.read()
 except FileNotFoundError:
-    long_description = "A modern Python client for the Handelsregister.ai SaaS."
+    long_description = "A modern Python client for the handelsregister.ai"
 
 # Package name MUST be "handelsregister" not "handelsregister-ai"
 setuptools.setup(
     name="handelsregister",
     version=package_version,
     author="Fusionbase",
-    author_email="info@fusionbase.com",
-    description="A modern Python client for the Handelsregister.ai SaaS.",
+    author_email="info@handelsregister.ai.com",
+    description="A modern Python client for handelsregister.ai"
     long_description=long_description,
     long_description_content_type="text/markdown",
     url="https://handelsregister.ai/",
