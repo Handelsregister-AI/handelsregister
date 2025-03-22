@@ -1,0 +1,58 @@
+# Python bytecode
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Distribution / packaging
+dist/
+build/
+*.egg-info/
+*.egg
+MANIFEST
+
+# Unit test / coverage reports
+.coverage
+.coverage.*
+.pytest_cache/
+htmlcov/
+coverage.xml
+*.cover
+
+# Virtual environments
+venv/
+env/
+ENV/
+.env/
+.venv/
+
+# Environment variables
+.env
+.env.*
+
+# IDE specific files
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+
+# Jupyter Notebook
+.ipynb_checkpoints
+
+# Log files
+*.log
+logs/
+
+# Specific to this project
+api_response_sample.json
+
+# Documentation
+docs/_build/
+docs/site/
+
+# Local development configuration
+local_settings.py
+settings_local.py
+
+# Cached files
+.cache/
