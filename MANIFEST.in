@@ -1,0 +1,77 @@
+# MANIFEST.in
+# Exclude everything that appears in your .gitignore.
+
+# -----------------------------------------------------------------------------
+# Python bytecode
+recursive-exclude __pycache__ *
+global-exclude *.py[cod]
+global-exclude *$py.class
+
+# -----------------------------------------------------------------------------
+# Distribution / packaging
+recursive-exclude dist *
+recursive-exclude build *
+recursive-exclude *.egg-info *
+global-exclude *.egg
+exclude MANIFEST
+
+# -----------------------------------------------------------------------------
+# Unit test / coverage reports
+exclude .coverage
+global-exclude .coverage.*
+recursive-exclude .pytest_cache *
+recursive-exclude htmlcov *
+exclude coverage.xml
+global-exclude *.cover
+
+# -----------------------------------------------------------------------------
+# Virtual environments
+recursive-exclude venv *
+recursive-exclude env *
+recursive-exclude ENV *
+recursive-exclude .env *
+recursive-exclude .venv *
+exclude .env
+global-exclude .env.*
+
+# -----------------------------------------------------------------------------
+# IDE specific files
+recursive-exclude .idea *
+recursive-exclude .vscode *
+global-exclude *.swp
+global-exclude *.swo
+global-exclude .DS_Store
+
+# -----------------------------------------------------------------------------
+# Jupyter Notebook
+recursive-exclude .ipynb_checkpoints *
+
+# -----------------------------------------------------------------------------
+# Log files
+global-exclude *.log
+recursive-exclude logs *
+
+# -----------------------------------------------------------------------------
+# Specific to this project
+exclude api_response_sample.json
+
+# -----------------------------------------------------------------------------
+# Documentation
+recursive-exclude docs/_build *
+recursive-exclude docs/site *
+
+# -----------------------------------------------------------------------------
+# Local development configuration
+exclude local_settings.py
+exclude settings_local.py
+
+# -----------------------------------------------------------------------------
+# Cached files
+recursive-exclude .cache *
+recursive-exclude .github *
+recursive-exclude .git *
+recursive-exclude dist *
+
+# -----------------------------------------------------------------------------
+# Other credentials / secrets
+exclude .git-credentials

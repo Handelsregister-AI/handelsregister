@@ -24,9 +24,9 @@ except FileNotFoundError:
 setuptools.setup(
     name="handelsregister",
     version=package_version,
-    author="Fusionbase",
+    author="Handelsregister.ai",
     author_email="info@handelsregister.ai.com",
-    description="A modern Python client for handelsregister.ai"
+    description="A modern Python client for handelsregister.ai",
     long_description=long_description,
     long_description_content_type="text/markdown",
     url="https://handelsregister.ai/",
