@@ -40,7 +40,7 @@ from handelsregister import Handelsregister
 client = Handelsregister(api_key="your_api_key_here")
 
 # Fetch company information
-company_data = client.fetch_organization(q="Siemens AG München")
+company_data = client.fetch_organization(q="Konux GmbH München")
 
 # Access company data
 print(f"Company: {company_data['name']}")
@@ -96,8 +96,8 @@ import json
 # Sample data in a JSON file
 data = [
     {"company_name": "BMW AG", "city": "München"},
-    {"company_name": "Siemens AG", "city": "München"},
-    {"company_name": "SAP SE", "city": "Walldorf"}
+    {"company_name": "Konux GmbH", "city": "München"},
+    {"company_name": "OroraTech GmbH", "city": "Walldorf"}
 ]
 
 # Save to a file
