@@ -56,3 +56,4 @@ settings_local.py
 
 # Cached files
 .cache/
+.git-credentials
