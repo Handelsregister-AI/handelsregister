@@ -36,7 +36,9 @@ class Handelsregister:
         self,
         api_key: Optional[str] = None,
         timeout: float = 10.0,
-        base_url: str = BASE_URL
+        base_url: str = BASE_URL,
+        cache_enabled: bool = True,
+        rate_limit: float = 0.0,
     ) -> None:
         """
         Initialize the Handelsregister client.
@@ -63,6 +65,11 @@ class Handelsregister:
         self.headers = {
             "User-Agent": f"handelsregister-python-client/{__version__}"
         }
+
+        self.cache_enabled = cache_enabled
+        self.rate_limit = rate_limit
+        self._cache: Dict[tuple, Dict[str, Any]] = {}
+        self._last_request_time = 0.0
 
         logger.debug("Handelsregister client initialized with base_url=%s", self.base_url)
 
@@ -110,6 +117,23 @@ class Handelsregister:
 
         url = f"{self.base_url}/fetch-organization"
 
+        cache_key = (
+            q,
+            tuple(sorted(features)) if features else (),
+            ai_search,
+            tuple(sorted(kwargs.items())),
+        )
+
+        if self.cache_enabled and cache_key in self._cache:
+            logger.debug("Returning cached result for %s", q)
+            return self._cache[cache_key]
+
+        # Rate limiting
+        if self.rate_limit > 0:
+            elapsed = time.time() - self._last_request_time
+            if elapsed < self.rate_limit:
+                time.sleep(self.rate_limit - elapsed)
+
         # Up to 3 retries with exponential backoff
         max_retries = 3
         for attempt in range(max_retries):
@@ -119,6 +143,9 @@ class Handelsregister:
                     response = client.get(url, headers=self.headers, params=params)
                     response.raise_for_status()
                     data = response.json()
+                    self._last_request_time = time.time()
+                    if self.cache_enabled:
+                        self._cache[cache_key] = data
                     return data
 
             except httpx.RequestError as exc:
@@ -140,10 +167,18 @@ class Handelsregister:
                 logger.error("Invalid JSON response: %s", exc)
                 raise InvalidResponseError(f"Received non-JSON response: {exc}") from exc
 
+    def fetch_organization_df(self, *args, **kwargs):
+        """Fetch organization data and return a pandas DataFrame."""
+        data = self.fetch_organization(*args, **kwargs)
+        import pandas as pd
+        return pd.json_normalize(data)
+
     def enrich(
         self,
         file_path: str = "",
         input_type: str = "json",
+        output_path: Optional[str] = None,
+        output_type: Optional[str] = None,
         query_properties: Dict[str, str] = None,
         snapshot_dir: str = "",
         snapshot_steps: int = 10,
@@ -153,7 +188,7 @@ class Handelsregister:
         """
         Enrich a local data file with Handelsregister.ai results.
 
-        Currently only supports JSON input.
+        Supported input formats: JSON, CSV and XLSX.
 
         The process:
           1. If there's a snapshot, load it.
@@ -165,7 +200,9 @@ class Handelsregister:
           5. Take periodic snapshots to allow resuming.
         
         :param file_path: Path to the input file.
-        :param input_type: Type of input file (only 'json' is supported for now).
+        :param input_type: Type of input file ('json', 'csv' or 'xlsx').
+        :param output_path: Optional path to save the enriched output file.
+        :param output_type: Output file type ('json', 'csv', 'xlsx'). Defaults to input_type.
         :param query_properties: Dict describing which fields are combined to form 'q'.
                                  Example: {'name': 'company_name', 'location': 'city'}
         :param snapshot_dir: Directory in which to store intermediate snapshots.
@@ -173,11 +210,23 @@ class Handelsregister:
         :param snapshots: Keep at most this many historical snapshots.
         :param params: Additional parameters for fetch_organization (e.g. features, ai_search).
         """
-        if input_type.lower() != "json":
-            raise ValueError("enrich() currently only supports 'json' input_type.")
+        input_type = input_type.lower()
+        if input_type not in {"json", "csv", "xlsx"}:
+            raise ValueError("enrich() supports only 'json', 'csv' or 'xlsx' input_type.")
+
+        if output_type is None:
+            output_type = input_type
+        else:
+            output_type = output_type.lower()
+            if output_type not in {"json", "csv", "xlsx"}:
+                raise ValueError("output_type must be 'json', 'csv' or 'xlsx'.")
 
         if not file_path:
             raise ValueError("file_path is required for enrich().")
+
+        if output_path is None:
+            base = Path(file_path)
+            output_path = str(base.with_name(base.stem + "_handelsregister_ai_enriched." + output_type))
 
         if query_properties is None:
             query_properties = {}
@@ -210,10 +259,18 @@ class Handelsregister:
         # ------------------------------------------------
         # 2. Load the current file
         # ------------------------------------------------
-        with open(file_path, "r", encoding="utf-8") as f:
-            file_data = json.load(f)
-            if not isinstance(file_data, list):
-                raise ValueError("JSON data must be a list of items for enrichment.")
+        if input_type == "json":
+            with open(file_path, "r", encoding="utf-8") as f:
+                file_data = json.load(f)
+                if not isinstance(file_data, list):
+                    raise ValueError("JSON data must be a list of items for enrichment.")
+        else:
+            import pandas as pd
+            if input_type == "csv":
+                df = pd.read_csv(file_path)
+            else:  # xlsx
+                df = pd.read_excel(file_path)
+            file_data = df.to_dict(orient="records")
 
         logger.debug("Loaded %d items from file '%s'.", len(file_data), file_path)
 
@@ -280,7 +337,46 @@ class Handelsregister:
         if snapshot_path:
             self._create_snapshot(merged_data, snapshot_path, snapshots)
 
-        logger.info("Enrichment process completed.")
+        # Write final output file
+        if output_type == "json":
+            with open(output_path, "w", encoding="utf-8") as f:
+                json.dump(merged_data, f, ensure_ascii=False, indent=2)
+        else:
+            import pandas as pd
+            df_out = pd.DataFrame(merged_data)
+            if output_type == "csv":
+                df_out.to_csv(output_path, index=False)
+            else:
+                df_out.to_excel(output_path, index=False)
+
+        logger.info("Enrichment process completed. Output saved to %s", output_path)
+
+    def enrich_dataframe(
+        self,
+        df,
+        query_properties: Dict[str, str] = None,
+        params: Dict[str, Any] = None,
+    ):
+        """Enrich a pandas DataFrame with Handelsregister.ai results."""
+        import pandas as pd
+
+        if query_properties is None:
+            query_properties = {}
+        if params is None:
+            params = {}
+
+        records = df.to_dict(orient="records")
+        enriched = []
+        for record in records:
+            q_string = self._build_q_string(record, query_properties)
+            if q_string:
+                result = self.fetch_organization(q=q_string, **params)
+            else:
+                result = None
+            record["_handelsregister_result"] = result
+            enriched.append(record)
+
+        return pd.DataFrame(enriched)
 
     # -------------------------------------------------------------------
     # Helper Methods

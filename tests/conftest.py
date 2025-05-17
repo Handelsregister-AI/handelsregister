@@ -3,6 +3,7 @@ import os
 import pytest
 import tempfile
 from unittest.mock import MagicMock, patch
+import pandas as pd
 
 from handelsregister import Handelsregister
 
@@ -76,6 +77,32 @@ def sample_json_file(tmp_path):
     with open(file_path, 'w', encoding='utf-8') as f:
         json.dump(data, f)
         
+    return str(file_path)
+
+
+@pytest.fixture
+def sample_csv_file(tmp_path):
+    data = [
+        {"company_name": "OroraTech GmbH", "city": "München", "id": "1"},
+        {"company_name": "Example AG", "city": "Berlin", "id": "2"},
+        {"company_name": "Test GmbH", "city": "Hamburg", "id": "3"}
+    ]
+    df = pd.DataFrame(data)
+    file_path = tmp_path / "sample.csv"
+    df.to_csv(file_path, index=False)
+    return str(file_path)
+
+
+@pytest.fixture
+def sample_xlsx_file(tmp_path):
+    data = [
+        {"company_name": "OroraTech GmbH", "city": "München", "id": "1"},
+        {"company_name": "Example AG", "city": "Berlin", "id": "2"},
+        {"company_name": "Test GmbH", "city": "Hamburg", "id": "3"}
+    ]
+    df = pd.DataFrame(data)
+    file_path = tmp_path / "sample.xlsx"
+    df.to_excel(file_path, index=False)
     return str(file_path)
 
 
