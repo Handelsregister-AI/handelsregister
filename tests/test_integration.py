@@ -112,8 +112,8 @@ class TestEnrichIntegration:
         """Test enrich with invalid input_type."""
         client, _ = mock_client
         
-        with pytest.raises(ValueError, match="enrich\\(\\) currently only supports 'json' input_type"):
-            client.enrich(file_path="test.csv", input_type="csv")
+        with pytest.raises(ValueError, match="enrich() supports only"):
+            client.enrich(file_path="test.csv", input_type="bad")
 
     def test_missing_file_path(self, mock_client):
         """Test enrich with missing file_path."""
@@ -121,6 +121,65 @@ class TestEnrichIntegration:
         
         with pytest.raises(ValueError, match="file_path is required for enrich\\(\\)"):
             client.enrich(input_type="json")
+    def test_enrich_csv(self, mock_client, sample_csv_file, snapshot_directory, sample_organization_response):
+        client, mock_httpx = mock_client
+        mock_response = MagicMock()
+        mock_response.json.return_value = sample_organization_response
+        mock_response.raise_for_status.return_value = None
+        mock_session = MagicMock()
+        mock_session.get.return_value = mock_response
+        mock_httpx.return_value.__enter__.return_value = mock_session
+
+        out_file = os.path.join(snapshot_directory, "out.csv")
+        client.enrich(
+            file_path=sample_csv_file,
+            input_type="csv",
+            output_path=out_file,
+            output_type="csv",
+            query_properties={"name": "company_name", "location": "city"},
+            snapshot_dir=snapshot_directory,
+        )
+        assert mock_session.get.call_count == 3
+        assert os.path.exists(out_file)
+
+    def test_enrich_xlsx(self, mock_client, sample_xlsx_file, snapshot_directory, sample_organization_response):
+        client, mock_httpx = mock_client
+        mock_response = MagicMock()
+        mock_response.json.return_value = sample_organization_response
+        mock_response.raise_for_status.return_value = None
+        mock_session = MagicMock()
+        mock_session.get.return_value = mock_response
+        mock_httpx.return_value.__enter__.return_value = mock_session
+
+        out_file = os.path.join(snapshot_directory, "out.xlsx")
+        client.enrich(
+            file_path=sample_xlsx_file,
+            input_type="xlsx",
+            output_path=out_file,
+            output_type="xlsx",
+            query_properties={"name": "company_name", "location": "city"},
+            snapshot_dir=snapshot_directory,
+        )
+        assert mock_session.get.call_count == 3
+        assert os.path.exists(out_file)
+
+    def test_enrich_default_output(self, mock_client, sample_csv_file, snapshot_directory, sample_organization_response):
+        client, mock_httpx = mock_client
+        mock_response = MagicMock()
+        mock_response.json.return_value = sample_organization_response
+        mock_response.raise_for_status.return_value = None
+        mock_session = MagicMock()
+        mock_session.get.return_value = mock_response
+        mock_httpx.return_value.__enter__.return_value = mock_session
+
+        expected_out = sample_csv_file.replace(".csv", "_handelsregister_ai_enriched.csv")
+        client.enrich(
+            file_path=sample_csv_file,
+            input_type="csv",
+            query_properties={"name": "company_name", "location": "city"},
+            snapshot_dir=snapshot_directory,
+        )
+        assert os.path.exists(expected_out)
 
 
 @patch('httpx.Client')

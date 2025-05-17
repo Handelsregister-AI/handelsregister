@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "handelsregister"
-version = "0.1.0"
+version = "0.2"
 description = "Python SDK für den Zugriff auf die Handelsregister AI API"
 readme = "README.md"
 authors = [
@@ -24,6 +24,8 @@ keywords = ["handelsregister", "api", "german company data", "business data"]
 dependencies = [
     "httpx>=0.23.0",
     "tqdm>=4.0.0",
+    "pandas>=1.0.0",
+    "openpyxl>=3.0.0",
 ]
 requires-python = ">=3.7"
 
@@ -33,3 +35,6 @@ requires-python = ">=3.7"
 
 [tool.setuptools]
 packages = ["handelsregister"]
+
+[project.scripts]
+handelsregister = "handelsregister.cli:main"
