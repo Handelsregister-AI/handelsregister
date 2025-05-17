@@ -44,5 +44,12 @@ setuptools.setup(
     install_requires=[
         "httpx>=0.23.0",
         "tqdm>=4.0.0",
+        "pandas>=1.0.0",
+        "openpyxl>=3.0.0",
     ],
+    entry_points={
+        "console_scripts": [
+            "handelsregister-cli=handelsregister.cli:main",
+        ]
+    },
 )

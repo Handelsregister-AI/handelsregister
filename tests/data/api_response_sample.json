@@ -1,0 +1,51 @@
+{
+  "name": "KONUX GmbH",
+  "entity_id": "110fe0da2f84c8d3174ec7bfd1f0f15a",
+  "status": "ACTIVE",
+  "purpose": "Entwicklung und Vertrieb von Sensorik und Messtechnik",
+  "registration": {
+    "court": "München",
+    "register_type": "HRB",
+    "register_number": "210918",
+    "register_date": "2014-03-24T00:00:00"
+  },
+  "legal_form": "GmbH",
+  "address": {
+    "street": "Flößergasse 2",
+    "postal_code": "81369",
+    "city": "München",
+    "country_code": "DEU",
+    "coordinates": {"lat": 48.10646, "lng": 11.53716}
+  },
+  "contact_data": {
+    "website": "https://www.konux.com/de",
+    "phone_number": "+49 89 18955010"
+  },
+  "keywords": ["Sensorik", "Messtechnik"],
+  "products_and_services": ["KONUX Switch", "KONUX Network"],
+  "industry_classification": ["WZ2008"],
+  "wz2008_codes": [{"code": "26.51.0"}],
+  "related_persons": {
+    "current": [{"name": "Johanna Leisch", "role": {"label": "MANAGING_DIRECTOR"}}],
+    "past": [{"name": "Andreas König", "role": {"label": "MANAGING_DIRECTOR"}}]
+  },
+  "financial_kpi": [
+    {"year": 2022, "revenue": 1213678.77, "employees": 123},
+    {"year": 2021, "revenue": 1000000.0, "employees": 100}
+  ],
+  "balance_sheet_accounts": [
+    {"year": 2022, "balance_sheet_accounts": {"assets": 1000}}
+  ],
+  "profit_and_loss_account": [
+    {"year": 2022, "profit": 1234.56}
+  ],
+  "history": [
+    {"name": {"en": "change of address to Flößergasse 2"}},
+    {"name": {"en": "change of address to some other"}}
+  ],
+  "publications": [],
+  "meta": {
+    "request_credit_cost": 35,
+    "credits_remaining": 1000
+  }
+}

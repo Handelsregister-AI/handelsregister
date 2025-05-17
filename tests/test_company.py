@@ -11,8 +11,8 @@ from handelsregister.exceptions import HandelsregisterError
 def sample_api_response():
     """Load the sample API response data."""
     current_dir = os.path.dirname(os.path.abspath(__file__))
-    sdk_dir = os.path.dirname(current_dir)
-    sample_file = os.path.join(sdk_dir, "api_response_sample.json")
+    data_dir = os.path.join(current_dir, "data")
+    sample_file = os.path.join(data_dir, "api_response_sample.json")
     
     with open(sample_file, 'r', encoding='utf-8') as f:
         return json.load(f)

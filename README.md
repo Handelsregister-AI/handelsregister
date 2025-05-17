@@ -123,6 +123,23 @@ client.enrich(
 )
 ```
 
+## 🖥️ Command Line Interface
+
+You can also use a small CLI after installing the package:
+
+```bash
+$ handelsregister-cli search "KONUX GmbH München"
+{
+  "name": "KONUX GmbH",
+  "registration": {"register_number": "210918"},
+  "status": "ACTIVE"
+}
+
+$ handelsregister-cli enrich companies.csv --input csv \
+    --query-properties name=company_name location=city \
+    --snapshot-dir snapshots
+```
+
 ## 📋 Available Features
 
 The API supports several feature flags that you can include in your requests:

@@ -1,5 +1,6 @@
 import json
 import os
+import sys
 import pytest
 from unittest.mock import MagicMock, patch
 
@@ -210,3 +211,81 @@ class TestHelperMethods:
         new_item = next(item for item in merged if item["company_name"] == "New GmbH")
         assert new_item["_in_file"] is True
         assert "_handelsregister_result" not in new_item
+
+
+class TestAdditionalFeatures:
+    def test_fetch_dataframe(self, mock_client, sample_organization_response):
+        client, _ = mock_client
+        df = client.fetch_organization_df(q="OroraTech GmbH")
+        assert not df.empty
+        assert df.loc[0, "name"] == sample_organization_response["name"]
+
+    def test_enrich_dataframe(self, mock_client):
+        client, _ = mock_client
+        import pandas as pd
+        df = pd.DataFrame([
+            {"company_name": "A", "city": "X"},
+            {"company_name": "B", "city": "Y"},
+        ])
+        result = client.enrich_dataframe(
+            df,
+            query_properties={"name": "company_name", "location": "city"},
+        )
+        assert "_handelsregister_result" in result.columns
+        assert len(result) == 2
+
+    def test_cli_search(self, monkeypatch):
+        from handelsregister.cli import main as cli_main
+
+        called = {}
+
+        def fake_fetch(self, q, features=None, ai_search=None):
+            called['q'] = q
+            called['features'] = features
+            called['ai_search'] = ai_search
+            return {"ok": True}
+
+        monkeypatch.setattr("handelsregister.client.Handelsregister.fetch_organization", fake_fetch)
+        monkeypatch.setattr(sys, 'argv', ["prog", "search", "ACME", "--feature", "f1"])
+        cli_main()
+        assert called['q'] == "ACME"
+        assert called['features'] == ["f1"]
+
+    def test_cli_enrich(self, monkeypatch, sample_csv_file):
+        from handelsregister.cli import main as cli_main
+
+        called = {}
+
+        def fake_enrich(self, file_path, input_type="json", **kwargs):
+            called['file_path'] = file_path
+            called['input_type'] = input_type
+
+        monkeypatch.setattr("handelsregister.client.Handelsregister.enrich", fake_enrich)
+        monkeypatch.setattr(sys, 'argv', ["prog", "enrich", sample_csv_file, "--input", "csv"])
+        cli_main()
+        assert called['file_path'] == sample_csv_file
+        assert called['input_type'] == "csv"
+
+    def test_caching(self, mock_client):
+        client, _ = mock_client
+        client.fetch_organization(q="A")
+        client.fetch_organization(q="A")
+        # Only one actual HTTP call due to caching
+        assert _.return_value.__enter__.return_value.get.call_count == 1
+
+    def test_rate_limit(self, sample_organization_response):
+        with patch("handelsregister.client.httpx.Client") as mock_httpx, \
+             patch("handelsregister.client.time") as mock_time:
+            mock_time.time.side_effect = [0, 0, 0, 0, 1, 1]
+            mock_time.sleep.return_value = None
+            mock_response = MagicMock()
+            mock_response.json.return_value = sample_organization_response
+            mock_response.raise_for_status.return_value = None
+            mock_session = MagicMock()
+            mock_session.get.return_value = mock_response
+            mock_httpx.return_value.__enter__.return_value = mock_session
+
+            client = Handelsregister(api_key="x", rate_limit=1)
+            client.fetch_organization(q="A")
+            client.fetch_organization(q="B")
+            mock_time.sleep.assert_called()

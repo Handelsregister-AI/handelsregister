@@ -3,6 +3,7 @@ import os
 import pytest
 import tempfile
 from unittest.mock import MagicMock, patch
+import pandas as pd
 
 from handelsregister import Handelsregister
 
@@ -56,8 +57,8 @@ def real_client():
 def sample_organization_response():
     """Load the sample API response data."""
     current_dir = os.path.dirname(os.path.abspath(__file__))
-    sdk_dir = os.path.dirname(current_dir)
-    sample_file = os.path.join(sdk_dir, "api_response_sample.json")
+    data_dir = os.path.join(current_dir, "data")
+    sample_file = os.path.join(data_dir, "api_response_sample.json")
     
     with open(sample_file, 'r', encoding='utf-8') as f:
         return json.load(f)
@@ -76,6 +77,32 @@ def sample_json_file(tmp_path):
     with open(file_path, 'w', encoding='utf-8') as f:
         json.dump(data, f)
         
+    return str(file_path)
+
+
+@pytest.fixture
+def sample_csv_file(tmp_path):
+    data = [
+        {"company_name": "OroraTech GmbH", "city": "München", "id": "1"},
+        {"company_name": "Example AG", "city": "Berlin", "id": "2"},
+        {"company_name": "Test GmbH", "city": "Hamburg", "id": "3"}
+    ]
+    df = pd.DataFrame(data)
+    file_path = tmp_path / "sample.csv"
+    df.to_csv(file_path, index=False)
+    return str(file_path)
+
+
+@pytest.fixture
+def sample_xlsx_file(tmp_path):
+    data = [
+        {"company_name": "OroraTech GmbH", "city": "München", "id": "1"},
+        {"company_name": "Example AG", "city": "Berlin", "id": "2"},
+        {"company_name": "Test GmbH", "city": "Hamburg", "id": "3"}
+    ]
+    df = pd.DataFrame(data)
+    file_path = tmp_path / "sample.xlsx"
+    df.to_excel(file_path, index=False)
     return str(file_path)
 
 
