@@ -36,7 +36,7 @@ def mock_client(sample_organization_response):
         mock_session.get.return_value = mock_response
         mock_httpx.return_value.__enter__.return_value = mock_session
         
-        return client, mock_httpx
+        yield client, mock_httpx
 
 
 @pytest.fixture

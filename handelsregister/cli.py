@@ -33,6 +33,8 @@ def main():
         default=[],
         help="Mappings like name=company_name location=city",
     )
+    enrich_parser.add_argument("--feature", dest="features", action="append")
+    enrich_parser.add_argument("--ai-search", dest="ai_search")
 
     args = parser.parse_args()
 
@@ -47,11 +49,17 @@ def main():
         print(json.dumps(result, indent=2, ensure_ascii=False))
     elif args.command == "enrich":
         query_props = parse_query_properties(args.query_properties)
+        params = {}
+        if args.features:
+            params["features"] = args.features
+        if args.ai_search:
+            params["ai_search"] = args.ai_search
         client.enrich(
             file_path=args.file_path,
             input_type=args.input_type,
             query_properties=query_props,
             snapshot_dir=args.snapshot_dir,
+            params=params,
         )
     else:
         parser.print_help()

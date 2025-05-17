@@ -159,6 +159,11 @@ class TestHelperMethods:
         q_string = client._build_q_string(item, query_props)
         assert q_string == ""
 
+        # Test with None values
+        item = {"company_name": None, "city": "Berlin"}
+        q_string = client._build_q_string(item, query_props)
+        assert q_string == "Berlin"
+
     def test_build_key(self):
         """Test building unique keys for items."""
         client = Handelsregister(api_key="dummy_key")
@@ -246,10 +251,16 @@ class TestAdditionalFeatures:
             return {"ok": True}
 
         monkeypatch.setattr("handelsregister.client.Handelsregister.fetch_organization", fake_fetch)
-        monkeypatch.setattr(sys, 'argv', ["prog", "search", "ACME", "--feature", "f1"])
+        monkeypatch.setenv("HANDELSREGISTER_API_KEY", "x")
+        monkeypatch.setattr(
+            sys,
+            'argv',
+            ["prog", "search", "ACME", "--feature", "f1", "--ai-search", "on-default"],
+        )
         cli_main()
         assert called['q'] == "ACME"
         assert called['features'] == ["f1"]
+        assert called['ai_search'] == "on-default"
 
     def test_cli_enrich(self, monkeypatch, sample_csv_file):
         from handelsregister.cli import main as cli_main
@@ -259,12 +270,30 @@ class TestAdditionalFeatures:
         def fake_enrich(self, file_path, input_type="json", **kwargs):
             called['file_path'] = file_path
             called['input_type'] = input_type
+            called['params'] = kwargs.get('params')
 
         monkeypatch.setattr("handelsregister.client.Handelsregister.enrich", fake_enrich)
-        monkeypatch.setattr(sys, 'argv', ["prog", "enrich", sample_csv_file, "--input", "csv"])
+        monkeypatch.setenv("HANDELSREGISTER_API_KEY", "x")
+        monkeypatch.setattr(
+            sys,
+            'argv',
+            [
+                "prog",
+                "enrich",
+                sample_csv_file,
+                "--input",
+                "csv",
+                "--feature",
+                "f1",
+                "--ai-search",
+                "on-default",
+            ],
+        )
         cli_main()
         assert called['file_path'] == sample_csv_file
         assert called['input_type'] == "csv"
+        assert called['params']['features'] == ["f1"]
+        assert called['params']['ai_search'] == "on-default"
 
     def test_caching(self, mock_client):
         client, _ = mock_client

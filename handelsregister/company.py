@@ -150,10 +150,12 @@ class Company:
     def registration_date(self) -> str:
         """Get the registration date."""
         # First try the registration date from the registration dict
-        date = self.registration.get("registered_at", "")
-        if not date:
-            # If not available, try the top-level registration_date field
-            date = self._data.get("registration_date", "")
+        date = (
+            self.registration.get("registered_at")
+            or self.registration.get("register_date")
+            or self._data.get("registration_date")
+            or self._data.get("register_date", "")
+        )
         return date
     
     # --------------------------------
@@ -206,7 +208,7 @@ class Company:
         elif city:
             components.append(city)
         
-        country = addr.get("country", "")
+        country = addr.get("country", addr.get("country_code", ""))
         if country:
             components.append(country)
         
@@ -216,8 +218,8 @@ class Company:
     def coordinates(self) -> Tuple[float, float]:
         """Get the latitude and longitude coordinates for the company address."""
         coords = self.address.get("coordinates", {})
-        lat = coords.get("latitude")
-        lng = coords.get("longitude")
+        lat = coords.get("latitude", coords.get("lat"))
+        lng = coords.get("longitude", coords.get("lng"))
         if lat is not None and lng is not None:
             return (lat, lng)
         return (0.0, 0.0)
@@ -259,12 +261,19 @@ class Company:
     @property
     def industry_classification(self) -> Dict[str, List[Dict[str, str]]]:
         """Get the industry classification dictionary."""
-        return self._data.get("industry_classification", {})
+        ic = self._data.get("industry_classification", {})
+        if isinstance(ic, list):
+            # Older API versions returned the codes separately
+            return {"WZ2008": self._data.get("wz2008_codes", ic)}
+        return ic
     
     @property
     def wz2008_codes(self) -> List[Dict[str, str]]:
         """Get the WZ2008 industry classification codes."""
-        return self.industry_classification.get("WZ2008", [])
+        ic = self.industry_classification
+        if isinstance(ic, dict):
+            return ic.get("WZ2008", [])
+        return self._data.get("wz2008_codes", [])
     
     # --------------------------------
     # Related persons (management, etc.)
@@ -303,7 +312,14 @@ class Company:
         else:
             persons = self.all_related_persons
             
-        return [p for p in persons if p.get("label") == role_label]
+        result = []
+        for p in persons:
+            label = p.get("label") or p.get("role", {}).get("label")
+            if label == role_label:
+                if "label" not in p and label is not None:
+                    p = {**p, "label": label}
+                result.append(p)
+        return result
     
     # --------------------------------
     # Financial information
@@ -396,9 +412,11 @@ class Company:
         :param event_type: The type of events to filter by.
         :return: A list of history events of the specified type.
         """
+        event_type_lower = event_type.lower()
         return [
-            event for event in self.history 
-            if event.get("name", {}).get("en", "").lower() == event_type.lower()
+            event
+            for event in self.history
+            if event.get("name", {}).get("en", "").lower().startswith(event_type_lower)
         ]
     
     @property
