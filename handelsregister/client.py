@@ -362,7 +362,10 @@ class Handelsregister:
         """
         parts = []
         for field_key in query_properties.values():
-            val = str(item.get(field_key, "")).strip()
+            raw_val = item.get(field_key)
+            if raw_val is None:
+                continue
+            val = str(raw_val).strip()
             if val:
                 parts.append(val)
         return " ".join(parts).strip()

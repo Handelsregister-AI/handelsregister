@@ -46,9 +46,9 @@ class TestCompanyInitialization:
         features = ["related_persons", "financial_kpi"]
         company = Company("KONUX GmbH", client=mock_client, features=features)
         mock_client.fetch_organization.assert_called_once_with(
-            q="KONUX GmbH", 
-            features=features, 
-            ai_search="on-default"
+            q="KONUX GmbH",
+            features=features,
+            ai_search="off"
         )
     
     def test_init_with_ai_search(self, mock_client):
@@ -64,9 +64,9 @@ class TestCompanyInitialization:
         """Test initialization with additional kwargs."""
         company = Company("KONUX GmbH", client=mock_client, some_param="value")
         mock_client.fetch_organization.assert_called_once_with(
-            q="KONUX GmbH", 
-            features=[], 
-            ai_search="on-default",
+            q="KONUX GmbH",
+            features=[],
+            ai_search="off",
             some_param="value"
         )
     

@@ -112,7 +112,7 @@ class TestEnrichIntegration:
         """Test enrich with invalid input_type."""
         client, _ = mock_client
         
-        with pytest.raises(ValueError, match="enrich() supports only"):
+        with pytest.raises(ValueError, match=r"enrich\(\) supports only"):
             client.enrich(file_path="test.csv", input_type="bad")
 
     def test_missing_file_path(self, mock_client):
