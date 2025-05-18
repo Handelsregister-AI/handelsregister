@@ -1,45 +1,51 @@
 import os
 import re
+from pathlib import Path
+
 import setuptools
 
-# Read the version from your package's version.py
-here = os.path.abspath(os.path.dirname(__file__))
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
 
-version_file = os.path.join(here, "handelsregister", "version.py")
-with open(version_file, encoding="utf-8") as f:
-    version_match = re.search(r'^__version__\s*=\s*"(.*)"', f.read(), re.M)
-    if not version_match:
+here = Path(__file__).resolve().parent
+version_file = here / "handelsregister" / "version.py"
+readme_file  = here / "README.md"
+
+# Extract the version string
+with version_file.open(encoding="utf-8") as f:
+    m = re.search(r'^__version__\s*=\s*"(.*)"', f.read(), re.M)
+    if not m:
         raise RuntimeError("Unable to find __version__ in version.py")
-    package_version = version_match.group(1)
+    package_version = m.group(1)
 
-# Read the long description from your README
-readme_file = os.path.join(here, "README.md")
-try:
-    with open(readme_file, encoding="utf-8") as f:
-        long_description = f.read()
-except FileNotFoundError:
-    long_description = "A modern Python client for the handelsregister.ai"
+# Long description
+long_description = readme_file.read_text(encoding="utf-8") \
+    if readme_file.exists() else \
+    "Python SDK für den Zugriff auf die Handelsregister AI API"
 
-# Package name MUST be "handelsregister" not "handelsregister-ai"
+# ---------------------------------------------------------------------------
+# Setup
+# ---------------------------------------------------------------------------
+
 setuptools.setup(
     name="handelsregister",
     version=package_version,
-    author="Handelsregister.ai",
-    author_email="info@handelsregister.ai.com",
-    description="A modern Python client for handelsregister.ai",
+    author="Handelsregister Team",
+    author_email="info@handelsregister.ai",
+    url="https://github.com/Handelsregister-AI/handelsregister",
+    description="Python SDK für den Zugriff auf die handelsregister.ai API",
     long_description=long_description,
     long_description_content_type="text/markdown",
-    url="https://handelsregister.ai/",
+
+    # Only the SPDX identifier is needed; do NOT add license_files here —
+    # that field generates the rejected “license-file” metadata.
     license="MIT",
-    # Explicitly set the package directory to find handelsregister
-    package_dir={"": "."},
-    packages=setuptools.find_packages(exclude=["tests", "tests.*"]),
+
+    # Packages
+    packages=setuptools.find_packages(exclude=("tests", "tests.*")),
     include_package_data=True,
-    classifiers=[
-        "Programming Language :: Python :: 3",
-        "License :: OSI Approved :: MIT License",
-        "Operating System :: OS Independent",
-    ],
+
     python_requires=">=3.7",
     install_requires=[
         "httpx>=0.23.0",
@@ -48,9 +54,21 @@ setuptools.setup(
         "openpyxl>=3.0.0",
         "rich>=13.0.0",
     ],
+
     entry_points={
         "console_scripts": [
             "handelsregister=handelsregister.cli:main",
-        ]
+        ],
     },
+
+    classifiers=[
+        "Development Status :: 3 - Alpha",
+        "Intended Audience :: Developers",
+        "License :: OSI Approved :: MIT License",
+        "Programming Language :: Python :: 3",
+        "Programming Language :: Python :: 3.8",
+        "Programming Language :: Python :: 3.9",
+        "Programming Language :: Python :: 3.10",
+        "Programming Language :: Python :: 3 :: Only",
+    ],
 )
