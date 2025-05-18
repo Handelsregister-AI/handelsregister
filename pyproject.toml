@@ -42,6 +42,11 @@ Homepage     = "https://github.com/Handelsregister-AI/handelsregister"
 
 [tool.setuptools]
 packages = ["handelsregister"]  # simple, explicit package list
+# setuptools automatically adds a "License-File" metadata field when license
+# files are included. This field is not yet accepted by PyPI and leads to
+# the "unrecognized or malformed field 'license-file'" error. We explicitly
+# disable this behaviour and include the LICENSE via MANIFEST.in instead.
+license-files = []
 
 [project.scripts]
 handelsregister = "handelsregister.cli:main"
