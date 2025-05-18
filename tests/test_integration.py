@@ -68,7 +68,10 @@ class TestEnrichIntegration:
         ]
         
         os.makedirs(snapshot_directory, exist_ok=True)
-        with open(os.path.join(snapshot_directory, "snapshot_20230101_120000.json"), 'w') as f:
+        with open(
+            os.path.join(snapshot_directory, "snapshot_noparams_20230101_120000.json"),
+            'w'
+        ) as f:
             json.dump(existing_data, f)
         
         # Configure the mock for new API calls

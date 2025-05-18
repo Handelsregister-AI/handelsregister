@@ -19,7 +19,7 @@ def main():
     subparsers = parser.add_subparsers(dest="command")
 
     fetch_parser = subparsers.add_parser("fetch", help="Fetch a company")
-    fetch_parser.add_argument("query")
+    fetch_parser.add_argument("query", nargs="+")
     fetch_parser.add_argument("--feature", dest="features", action="append")
     fetch_parser.add_argument("--ai-search", dest="ai_search")
 
@@ -43,12 +43,21 @@ def main():
     client = Handelsregister()
 
     if args.command == "fetch":
+        query_parts = list(args.query)
+        output_json = False
+        if query_parts and query_parts[0].lower() == "json":
+            output_json = True
+            query_parts = query_parts[1:]
+        query_string = " ".join(query_parts)
         result = client.fetch_organization(
-            q=args.query,
+            q=query_string,
             features=args.features,
             ai_search=args.ai_search,
         )
-        print(json.dumps(result, indent=2, ensure_ascii=False))
+        if output_json:
+            print(json.dumps(result, indent=2, ensure_ascii=False))
+        else:
+            print(client._format_flat_result(result))
     elif args.command == "enrich":
         query_props = parse_query_properties(args.query_properties)
         params = {}

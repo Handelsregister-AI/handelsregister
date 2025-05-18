@@ -125,10 +125,15 @@ client.enrich(
 
 ## 🖥️ Command Line Interface
 
-You can also use a small CLI after installing the package:
+You can also use a small CLI after installing the package.
+Use the `fetch` subcommand for a single company lookup and `enrich` to
+process a file of companies.
 
 ```bash
 $ handelsregister fetch "KONUX GmbH München"
+KONUX GmbH | Status: ACTIVE | Reg: München 210918 | Flößergasse 2, 81369 München, DEU
+
+$ handelsregister fetch json "KONUX GmbH München"
 {
   "name": "KONUX GmbH",
   "registration": {"register_number": "210918"},
@@ -138,6 +143,7 @@ $ handelsregister fetch "KONUX GmbH München"
 $ handelsregister enrich companies.csv --input csv \
     --query-properties name=company_name location=city \
     --snapshot-dir snapshots \
+    --feature related_persons --feature financial_kpi \
     --output-format csv
 ```
 

@@ -2,6 +2,7 @@ import os
 import json
 import time
 import logging
+import hashlib
 import httpx
 from datetime import datetime
 from typing import List, Optional, Dict, Any
@@ -230,6 +231,8 @@ class Handelsregister:
         if params is None:
             params = {}
 
+        param_hash = self._params_hash(params)
+
         snapshot_path = Path(snapshot_dir) if snapshot_dir else None
         if snapshot_path:
             snapshot_path.mkdir(parents=True, exist_ok=True)
@@ -244,7 +247,7 @@ class Handelsregister:
         # ------------------------------------------------
         snapshot_data = []
         if snapshot_path:
-            latest_snapshot = self._get_latest_snapshot(snapshot_path)
+            latest_snapshot = self._get_latest_snapshot(snapshot_path, param_hash)
             if latest_snapshot:
                 logger.info("Continuing from existing snapshot: %s", latest_snapshot)
                 with open(latest_snapshot, "r", encoding="utf-8") as f:
@@ -325,13 +328,15 @@ class Handelsregister:
 
                 # Snapshot logic: create snapshot every 'snapshot_steps' new items processed
                 if snapshot_path and current_step_count % snapshot_steps == 0:
-                    self._create_snapshot(merged_data, snapshot_path, snapshots)
+                    self._create_snapshot(
+                        merged_data, snapshot_path, snapshots, param_hash
+                    )
 
         # ------------------------------------------------
         # 5. Final snapshot after the loop, if requested
         # ------------------------------------------------
         if snapshot_path:
-            self._create_snapshot(merged_data, snapshot_path, snapshots)
+            self._create_snapshot(merged_data, snapshot_path, snapshots, param_hash)
 
         logger.info("Enrichment process completed.")
 
@@ -678,26 +683,50 @@ class Handelsregister:
         # If we have fields, build a tuple from those fields
         return tuple(item.get(field_name, "") for field_name in query_properties.values())
 
-    def _create_snapshot(self, data, snapshot_path: Path, max_snapshots: int):
+    def _params_hash(self, params: Dict[str, Any]) -> str:
+        """Create a stable hash for the given parameters."""
+        if not params:
+            return "noparams"
+
+        def _norm(value):
+            if isinstance(value, list):
+                return sorted(value)
+            if isinstance(value, dict):
+                return {k: _norm(v) for k, v in sorted(value.items())}
+            return value
+
+        normalized = {k: _norm(v) for k, v in sorted(params.items())}
+        raw = json.dumps(normalized, sort_keys=True, ensure_ascii=False).encode()
+        return hashlib.sha1(raw).hexdigest()[:8]
+
+    def _create_snapshot(
+        self,
+        data,
+        snapshot_path: Path,
+        max_snapshots: int,
+        param_hash: str,
+    ):
         """Creates a JSON snapshot of the data and prunes old snapshots."""
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        snapshot_file = snapshot_path / f"snapshot_{timestamp}.json"
+        snapshot_file = snapshot_path / f"snapshot_{param_hash}_{timestamp}.json"
         logger.debug("Creating snapshot: %s", snapshot_file)
 
         with open(snapshot_file, "w", encoding="utf-8") as f:
             json.dump(data, f, ensure_ascii=False, indent=2)
 
         # Prune old snapshots if we exceed max_snapshots
-        existing_snapshots = sorted(glob(str(snapshot_path / "snapshot_*.json")))
+        pattern = str(snapshot_path / f"snapshot_{param_hash}_*.json")
+        existing_snapshots = sorted(glob(pattern))
         if len(existing_snapshots) > max_snapshots:
             to_remove = existing_snapshots[:-max_snapshots]
             for old_snapshot in to_remove:
                 logger.debug("Removing old snapshot: %s", old_snapshot)
                 os.remove(old_snapshot)
 
-    def _get_latest_snapshot(self, snapshot_path: Path) -> Optional[str]:
-        """Return the path to the latest snapshot, or None if none exist."""
-        existing_snapshots = sorted(glob(str(snapshot_path / "snapshot_*.json")))
+    def _get_latest_snapshot(self, snapshot_path: Path, param_hash: str) -> Optional[str]:
+        """Return the path to the latest snapshot for the given parameters."""
+        pattern = str(snapshot_path / f"snapshot_{param_hash}_*.json")
+        existing_snapshots = sorted(glob(pattern))
         if existing_snapshots:
             return existing_snapshots[-1]
         return None
