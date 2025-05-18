@@ -46,6 +46,7 @@ setuptools.setup(
         "tqdm>=4.0.0",
         "pandas>=1.0.0",
         "openpyxl>=3.0.0",
+        "rich>=13.0.0",
     ],
     entry_points={
         "console_scripts": [

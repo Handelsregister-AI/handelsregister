@@ -26,6 +26,7 @@ dependencies = [
     "tqdm>=4.0.0",
     "pandas>=1.0.0",
     "openpyxl>=3.0.0",
+    "rich>=13.0.0",
 ]
 requires-python = ">=3.7"
 
