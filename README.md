@@ -129,6 +129,9 @@ You can also use a small CLI after installing the package.
 Use the `fetch` subcommand for a single company lookup and `enrich` to
 process a file of companies.
 
+By default the `fetch` command retrieves all available features and uses AI based search.
+If the optional `rich` dependency is installed, the CLI displays a colorful factsheet.
+
 ```bash
 $ handelsregister fetch "KONUX GmbH München"
 KONUX GmbH | Status: ACTIVE | Reg: München 210918 | Flößergasse 2, 81369 München, DEU
