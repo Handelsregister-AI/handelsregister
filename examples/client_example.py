@@ -34,7 +34,7 @@ def main():
     # Advanced lookup with specific features
     print("\n🔍 Advanced lookup with financial data and related persons")
     company_data = client.fetch_organization(
-        q="Musterfirma AG Berlin",
+        q="Konux GmbH aus München",
         features=[
             "financial_kpi",           # Include financial KPIs
             "related_persons",         # Include management/related persons

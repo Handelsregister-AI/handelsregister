@@ -28,6 +28,9 @@ ENV/
 # Environment variables
 .env
 .env.*
+snapshots
+companies.csv
+companies_handelsregister_ai_enriched.csv
 
 # IDE specific files
 .idea/
