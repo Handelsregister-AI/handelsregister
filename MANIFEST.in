@@ -14,6 +14,7 @@ recursive-exclude build *
 recursive-exclude *.egg-info *
 global-exclude *.egg
 exclude MANIFEST
+include LICENSE
 
 # -----------------------------------------------------------------------------
 # Unit test / coverage reports
