@@ -37,4 +37,4 @@ requires-python = ">=3.7"
 packages = ["handelsregister"]
 
 [project.scripts]
-handelsregister-cli = "handelsregister.cli:main"
+handelsregister = "handelsregister.cli:main"
