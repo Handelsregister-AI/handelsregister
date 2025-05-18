@@ -36,7 +36,7 @@ class Handelsregister:
     def __init__(
         self,
         api_key: Optional[str] = None,
-        timeout: float = 10.0,
+        timeout: float = 90.0,
         base_url: str = BASE_URL,
         cache_enabled: bool = True,
         rate_limit: float = 0.0,
