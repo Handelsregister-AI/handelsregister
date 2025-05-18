@@ -239,7 +239,7 @@ class TestAdditionalFeatures:
         assert "_handelsregister_result" in result.columns
         assert len(result) == 2
 
-    def test_cli_search(self, monkeypatch):
+    def test_cli_fetch(self, monkeypatch):
         from handelsregister.cli import main as cli_main
 
         called = {}
@@ -255,7 +255,7 @@ class TestAdditionalFeatures:
         monkeypatch.setattr(
             sys,
             'argv',
-            ["prog", "search", "ACME", "--feature", "f1", "--ai-search", "on-default"],
+            ["prog", "fetch", "ACME", "--feature", "f1", "--ai-search", "on-default"],
         )
         cli_main()
         assert called['q'] == "ACME"
@@ -271,6 +271,7 @@ class TestAdditionalFeatures:
             called['file_path'] = file_path
             called['input_type'] = input_type
             called['params'] = kwargs.get('params')
+            called['output_type'] = kwargs.get('output_type')
 
         monkeypatch.setattr("handelsregister.client.Handelsregister.enrich", fake_enrich)
         monkeypatch.setenv("HANDELSREGISTER_API_KEY", "x")
@@ -287,6 +288,8 @@ class TestAdditionalFeatures:
                 "f1",
                 "--ai-search",
                 "on-default",
+                "--output-format",
+                "csv",
             ],
         )
         cli_main()
@@ -294,6 +297,7 @@ class TestAdditionalFeatures:
         assert called['input_type'] == "csv"
         assert called['params']['features'] == ["f1"]
         assert called['params']['ai_search'] == "on-default"
+        assert called['output_type'] == "csv"
 
     def test_caching(self, mock_client):
         client, _ = mock_client

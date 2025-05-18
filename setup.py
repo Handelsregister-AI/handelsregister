@@ -49,7 +49,7 @@ setuptools.setup(
     ],
     entry_points={
         "console_scripts": [
-            "handelsregister-cli=handelsregister.cli:main",
+            "handelsregister=handelsregister.cli:main",
         ]
     },
 )

@@ -128,16 +128,17 @@ client.enrich(
 You can also use a small CLI after installing the package:
 
 ```bash
-$ handelsregister-cli search "KONUX GmbH München"
+$ handelsregister fetch "KONUX GmbH München"
 {
   "name": "KONUX GmbH",
   "registration": {"register_number": "210918"},
   "status": "ACTIVE"
 }
 
-$ handelsregister-cli enrich companies.csv --input csv \
+$ handelsregister enrich companies.csv --input csv \
     --query-properties name=company_name location=city \
-    --snapshot-dir snapshots
+    --snapshot-dir snapshots \
+    --output-format csv
 ```
 
 ## 📋 Available Features

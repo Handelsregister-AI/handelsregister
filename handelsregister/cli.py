@@ -18,15 +18,17 @@ def main():
     parser = argparse.ArgumentParser(description="Handelsregister.ai CLI")
     subparsers = parser.add_subparsers(dest="command")
 
-    search_parser = subparsers.add_parser("search", help="Search for a company")
-    search_parser.add_argument("query")
-    search_parser.add_argument("--feature", dest="features", action="append")
-    search_parser.add_argument("--ai-search", dest="ai_search")
+    fetch_parser = subparsers.add_parser("fetch", help="Fetch a company")
+    fetch_parser.add_argument("query")
+    fetch_parser.add_argument("--feature", dest="features", action="append")
+    fetch_parser.add_argument("--ai-search", dest="ai_search")
 
     enrich_parser = subparsers.add_parser("enrich", help="Enrich a data file")
     enrich_parser.add_argument("file_path")
     enrich_parser.add_argument("--input", dest="input_type", default="json")
     enrich_parser.add_argument("--snapshot-dir", dest="snapshot_dir", default="")
+    enrich_parser.add_argument("--output", dest="output_file", default="")
+    enrich_parser.add_argument("--output-format", dest="output_type", default="")
     enrich_parser.add_argument(
         "--query-properties",
         nargs="+",
@@ -40,7 +42,7 @@ def main():
 
     client = Handelsregister()
 
-    if args.command == "search":
+    if args.command == "fetch":
         result = client.fetch_organization(
             q=args.query,
             features=args.features,
@@ -60,6 +62,8 @@ def main():
             query_properties=query_props,
             snapshot_dir=args.snapshot_dir,
             params=params,
+            output_file=args.output_file,
+            output_type=args.output_type,
         )
     else:
         parser.print_help()

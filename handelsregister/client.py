@@ -181,7 +181,9 @@ class Handelsregister:
         snapshot_dir: str = "",
         snapshot_steps: int = 10,
         snapshots: int = 120,
-        params: Dict[str, Any] = None
+        params: Dict[str, Any] = None,
+        output_file: str = "",
+        output_type: str = ""
     ):
         """
         Enrich a local data file with Handelsregister.ai results.
@@ -205,10 +207,19 @@ class Handelsregister:
         :param snapshot_steps: Create a snapshot after processing this many new items.
         :param snapshots: Keep at most this many historical snapshots.
         :param params: Additional parameters for fetch_organization (e.g. features, ai_search).
+        :param output_file: Optional path for the enriched output file. If not
+                            provided, ``file_path`` will be used as a base name
+                            with ``_handelsregister_ai_enriched`` appended.
+        :param output_type: Desired output type ('json', 'csv' or 'xlsx'). If empty,
+                            defaults to the ``input_type``.
         """
         input_type = input_type.lower()
         if input_type not in {"json", "csv", "xlsx"}:
             raise ValueError("enrich() supports only 'json', 'csv' or 'xlsx' input_type.")
+
+        output_type = (output_type or input_type).lower()
+        if output_type not in {"json", "csv", "xlsx"}:
+            raise ValueError("enrich() supports only 'json', 'csv' or 'xlsx' output_type.")
 
         if not file_path:
             raise ValueError("file_path is required for enrich().")
@@ -324,6 +335,35 @@ class Handelsregister:
 
         logger.info("Enrichment process completed.")
 
+        # ------------------------------------------------
+        # 6. Write enriched output file
+        # ------------------------------------------------
+        if not output_file:
+            in_path = Path(file_path)
+            suffix_map = {"json": ".json", "csv": ".csv", "xlsx": ".xlsx"}
+            out_suffix = suffix_map.get(output_type, in_path.suffix)
+            output_name = f"{in_path.stem}_handelsregister_ai_enriched{out_suffix}"
+            output_file = str(in_path.with_name(output_name))
+
+        if output_type == "json":
+            with open(output_file, "w", encoding="utf-8") as f:
+                json.dump(merged_data, f, ensure_ascii=False, indent=2)
+        else:
+            import pandas as pd
+            for item in merged_data:
+                flat = self._flatten_result(item.get("_handelsregister_result"))
+                for k, v in flat.items():
+                    item[f"hr_{k}"] = v
+            df = pd.DataFrame(merged_data)
+            df["_handelsregister_summary"] = df["_handelsregister_result"].apply(self._format_flat_result)
+            df = df.drop(columns=["_handelsregister_result", "_in_file"], errors="ignore")
+            if output_type == "csv":
+                df.to_csv(output_file, index=False)
+            else:
+                df.to_excel(output_file, index=False)
+
+        logger.info("Enriched data written to %s", output_file)
+
     def enrich_dataframe(
         self,
         df,
@@ -354,6 +394,180 @@ class Handelsregister:
     # -------------------------------------------------------------------
     # Helper Methods
     # -------------------------------------------------------------------
+
+    def _format_flat_result(self, result: Any) -> str:
+        """Create a short string summary from an API result."""
+        if not isinstance(result, dict):
+            return ""
+
+        parts = []
+        name = result.get("name")
+        if name:
+            parts.append(name)
+
+        status = result.get("status")
+        if status:
+            parts.append(f"Status: {status}")
+
+        reg = result.get("registration", {})
+        reg_no = reg.get("register_number")
+        court = reg.get("court")
+        reg_parts = []
+        if court:
+            reg_parts.append(court)
+        if reg_no:
+            reg_parts.append(str(reg_no))
+        if reg_parts:
+            parts.append("Reg: " + " ".join(reg_parts))
+
+        addr = result.get("address", {})
+        addr_components = []
+        street = addr.get("street")
+        house_no = addr.get("house_number")
+        if street or house_no:
+            addr_components.append(" ".join(filter(None, [street, str(house_no) if house_no else None])).strip())
+        pc = addr.get("postal_code")
+        city = addr.get("city")
+        if pc or city:
+            addr_components.append(" ".join(filter(None, [str(pc) if pc else None, city])).strip())
+        country = addr.get("country") or addr.get("country_code")
+        if country:
+            addr_components.append(str(country))
+        if addr_components:
+            parts.append(", ".join(addr_components))
+
+        return " | ".join(parts)
+
+    def _flatten_account(self, account: Any, prefix: str = "") -> List[str]:
+        """Flatten a single account structure to lines."""
+        if isinstance(account, dict) and "name" in account:
+            name_dict = account.get("name", {})
+            name = name_dict.get("de") or name_dict.get("en") or name_dict.get("in_report", "")
+            value = account.get("value")
+            line = f"{prefix}{name}: {value}" if value is not None else f"{prefix}{name}"
+            lines = [line]
+            for child in account.get("children", []):
+                lines.extend(self._flatten_account(child, prefix + "> "))
+            return lines
+        elif isinstance(account, dict):
+            lines = []
+            for k, v in account.items():
+                if isinstance(v, (dict, list)):
+                    lines.extend(self._flatten_account(v, prefix + f"{k} > "))
+                else:
+                    lines.append(f"{prefix}{k}: {v}")
+            return lines
+        elif isinstance(account, list):
+            lines = []
+            for item in account:
+                lines.extend(self._flatten_account(item, prefix))
+            return lines
+        else:
+            return [f"{prefix}{account}"]
+
+    def _flatten_result(self, result: Any) -> Dict[str, Any]:
+        """Flatten a full API result into human readable strings."""
+        if not isinstance(result, dict):
+            return {}
+
+        flat: Dict[str, Any] = {}
+
+        simple_keys = ["name", "status", "legal_form", "registration_date", "purpose"]
+        for key in simple_keys:
+            if key in result:
+                flat[key] = result.get(key)
+
+        reg = result.get("registration", {})
+        if reg:
+            reg_parts = [reg.get("court"), reg.get("register_type"), reg.get("register_number")]
+            flat["registration"] = " ".join(str(p) for p in reg_parts if p)
+
+        addr = result.get("address", {})
+        if addr:
+            addr_parts = []
+            if addr.get("street") or addr.get("house_number"):
+                addr_parts.append(" ".join(filter(None, [addr.get("street"), str(addr.get("house_number"))])).strip())
+            if addr.get("postal_code") or addr.get("city"):
+                addr_parts.append(" ".join(filter(None, [str(addr.get("postal_code")), addr.get("city")])).strip())
+            if addr.get("country"):
+                addr_parts.append(addr.get("country"))
+            flat["address"] = ", ".join(addr_parts)
+
+        contact = result.get("contact_data", {})
+        if contact:
+            c_parts = []
+            if contact.get("website"):
+                c_parts.append(contact.get("website"))
+            if contact.get("phone_number"):
+                c_parts.append(contact.get("phone_number"))
+            if contact.get("email"):
+                c_parts.append(contact.get("email"))
+            flat["contact_data"] = " | ".join(c_parts)
+
+        if result.get("keywords"):
+            flat["keywords"] = ", ".join(result["keywords"])
+        if result.get("products_and_services"):
+            flat["products_and_services"] = ", ".join(result["products_and_services"])
+
+        kpis = result.get("financial_kpi")
+        if kpis:
+            kp_parts = []
+            for entry in kpis:
+                year = entry.get("year")
+                metrics = [f"{k}: {v}" for k, v in entry.items() if k != "year" and v is not None]
+                kp_parts.append(f"{year}: " + ", ".join(metrics))
+            flat["financial_kpi"] = " | ".join(kp_parts)
+
+        pla = result.get("profit_and_loss_account")
+        if pla:
+            pla_parts = []
+            for entry in pla:
+                year = entry.get("year")
+                accounts_field = entry.get("profit_and_loss_accounts")
+                accounts = []
+                if isinstance(accounts_field, list):
+                    for acc in accounts_field:
+                        accounts.extend(self._flatten_account(acc))
+                elif accounts_field is not None:
+                    accounts.extend(self._flatten_account(accounts_field))
+                else:
+                    for k, v in entry.items():
+                        if k != "year":
+                            accounts.append(f"{k}: {v}")
+                pla_parts.append(f"{year}: " + "; ".join(accounts))
+            flat["profit_and_loss_account"] = " | ".join(pla_parts)
+
+        bsa = result.get("balance_sheet_accounts")
+        if bsa:
+            bs_parts = []
+            for entry in bsa:
+                year = entry.get("year")
+                accounts_field = entry.get("balance_sheet_accounts")
+                accounts = []
+                if isinstance(accounts_field, list):
+                    for acc in accounts_field:
+                        accounts.extend(self._flatten_account(acc))
+                elif accounts_field is not None:
+                    accounts.extend(self._flatten_account(accounts_field))
+                else:
+                    for k, v in entry.items():
+                        if k != "year":
+                            accounts.append(f"{k}: {v}")
+                bs_parts.append(f"{year}: " + "; ".join(accounts))
+            flat["balance_sheet_accounts"] = " | ".join(bs_parts)
+
+        history = result.get("history")
+        if history:
+            hist_parts = []
+            for h in history:
+                name = (h.get("name", {}).get("en") or h.get("name", {}).get("de") or "").strip()
+                start = h.get("start_date", "")
+                desc = (h.get("description", {}).get("short", {}).get("en") or h.get("description", {}).get("short", {}).get("de") or "").strip()
+                parts = [p for p in [name, desc, start] if p]
+                hist_parts.append(" - ".join(parts))
+            flat["history"] = " || ".join(hist_parts)
+
+        return flat
 
     def _build_q_string(self, item: dict, query_properties: Dict[str, str]) -> str:
         """
