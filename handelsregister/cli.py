@@ -1,6 +1,6 @@
 import argparse
 import json
-from typing import List, Optional
+from typing import List, Optional, Any
 
 from .client import Handelsregister
 
@@ -59,13 +59,43 @@ def _display_result(client: Handelsregister, result: dict) -> None:
         if contact.get("phone_number"):
             profile.add_row("Phone", contact.get("phone_number"))
 
+        industry_info = result.get("industry_classification", {})
+        industries = []
+        if isinstance(industry_info, dict):
+            for _, entries in industry_info.items():
+                if isinstance(entries, list):
+                    for entry in entries:
+                        code = entry.get("code")
+                        label = entry.get("label")
+                        if code and label:
+                            industries.append(f"{code} {label}")
+                        elif code:
+                            industries.append(code)
+                        elif label:
+                            industries.append(label)
+                elif isinstance(entries, dict):
+                    code = entries.get("code")
+                    label = entries.get("label")
+                    if code and label:
+                        industries.append(f"{code} {label}")
+                    elif code:
+                        industries.append(code)
+                    elif label:
+                        industries.append(label)
+        if industries:
+            profile.add_row("Industry", ", ".join(industries))
+
         management_table = Table(title="Management")
         management_table.add_column("Name")
         management_table.add_column("Role")
         current_people = result.get("related_persons", {}).get("current", [])
         for person in current_people:
             name = person.get("name", "")
-            role = person.get("role", {}).get("label") or ""
+            role = (
+                person.get("role", {}).get("en", {}).get("long")
+                or person.get("role", {}).get("de", {}).get("long")
+                or person.get("label", "")
+            )
             management_table.add_row(name, role)
 
         # Determine latest financial year
@@ -81,23 +111,31 @@ def _display_result(client: Handelsregister, result: dict) -> None:
             financial_table.add_column("Metric")
             financial_table.add_column("Value")
 
+            def fmt_value(key: str, val: Any) -> str:
+                if isinstance(val, (int, float)) and key.lower() not in {"employees", "year"}:
+                    return f"{val:,.2f} €"
+                if isinstance(val, (int, float)):
+                    return f"{val:,}"
+                return str(val)
+
             kpi = next((x for x in result.get("financial_kpi", []) if x.get("year") == latest), {})
             for k, v in kpi.items():
                 if k != "year" and v is not None:
-                    financial_table.add_row(k.replace("_", " ").title(), str(v))
+                    label = "Balance Sum" if k == "active_total" else k.replace("_", " ").title()
+                    financial_table.add_row(label, fmt_value(k, v))
 
             bs = next((x for x in result.get("balance_sheet_accounts", []) if x.get("year") == latest), {})
             acc = bs.get("balance_sheet_accounts") or {}
             if isinstance(acc, dict):
                 for k, v in acc.items():
-                    financial_table.add_row(k.replace("_", " ").title(), str(v))
+                    financial_table.add_row(k.replace("_", " ").title(), fmt_value(k, v))
 
             pl = next((x for x in result.get("profit_and_loss_account", []) if x.get("year") == latest), {})
             pla = pl.get("profit_and_loss_accounts") or pl
             if isinstance(pla, dict):
                 for k, v in pla.items():
                     if k != "year" and v is not None:
-                        financial_table.add_row(k.replace("_", " ").title(), str(v))
+                        financial_table.add_row(k.replace("_", " ").title(), fmt_value(k, v))
 
         group_items = [profile]
         if management_table.row_count:
@@ -106,6 +144,7 @@ def _display_result(client: Handelsregister, result: dict) -> None:
             group_items.append(financial_table)
 
         console.print(Panel(Group(*group_items), title="Details", style="magenta"))
+        console.print("Data provided by [bold]handelsregister.ai[/bold]")
     else:
         print(summary)
 
