@@ -425,6 +425,40 @@ class Company:
         return self._data.get("publications", [])
     
     # --------------------------------
+    # Document fetching
+    # --------------------------------
+    
+    def fetch_document(
+        self,
+        document_type: str,
+        output_file: Optional[str] = None,
+    ) -> bytes:
+        """
+        Fetch official PDF documents for this company.
+        
+        :param document_type: Type of document to fetch. Valid values:
+                              - "shareholders_list": Gesellschafterliste document
+                              - "AD": Current excerpts (Aktuelle Daten)
+                              - "CD": Historical excerpts (Chronologische Daten)
+        :param output_file: Optional path to save the PDF file. If not provided,
+                            returns the PDF content as bytes.
+        :return: PDF content as bytes (if output_file is not provided).
+        :raises HandelsregisterError: For any request or response failures.
+        :raises ValueError: If entity_id is not available or for invalid parameters.
+        """
+        if not self.entity_id:
+            raise ValueError(
+                "Cannot fetch document: entity_id is not available for this company. "
+                "Make sure the company data was fetched successfully."
+            )
+        
+        return self._client.fetch_document(
+            company_id=self.entity_id,
+            document_type=document_type,
+            output_file=output_file
+        )
+    
+    # --------------------------------
     # Meta information
     # --------------------------------
     

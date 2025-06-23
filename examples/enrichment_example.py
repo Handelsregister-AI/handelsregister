@@ -23,10 +23,10 @@ API_KEY = os.getenv("HANDELSREGISTER_API_KEY", "your_api_key_here")
 # Sample company data
 SAMPLE_COMPANIES = [
     {"id": "1", "company_name": "KONUX GmbH", "city": "München"},
-    {"id": "2", "company_name": "Siemens AG", "city": "München"},
-    {"id": "3", "company_name": "BMW AG", "city": "München"},
-    {"id": "4", "company_name": "Allianz SE", "city": "München"},
-    {"id": "5", "company_name": "Flixbus GmbH", "city": "München"},
+    {"id": "2", "company_name": "OroraTech GmbH", "city": "München"},
+    {"id": "3", "company_name": "Isar Aerospace SE", "city": "Ottobrunn"},
+    {"id": "4", "company_name": "Celonis SE", "city": "München"},
+    {"id": "5", "company_name": "Personio SE", "city": "München"},
 ]
 
 def main():

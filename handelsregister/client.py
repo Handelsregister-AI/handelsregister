@@ -396,6 +396,107 @@ class Handelsregister:
 
         return pd.DataFrame(enriched)
 
+    def fetch_document(
+        self,
+        company_id: str,
+        document_type: str,
+        output_file: Optional[str] = None,
+    ) -> bytes:
+        """
+        Fetch official PDF documents from the German Handelsregister.
+
+        :param company_id: The unique company entity ID from search results.
+        :param document_type: Type of document to fetch. Valid values:
+                              - "shareholders_list": Gesellschafterliste document
+                              - "AD": Current excerpts (Aktuelle Daten)
+                              - "CD": Historical excerpts (Chronologische Daten)
+        :param output_file: Optional path to save the PDF file. If not provided,
+                            returns the PDF content as bytes.
+        :return: PDF content as bytes (if output_file is not provided).
+        :raises HandelsregisterError: For any request or response failures.
+        :raises ValueError: For invalid parameters.
+        """
+        if not company_id:
+            raise ValueError("Parameter 'company_id' is required.")
+        
+        if not document_type:
+            raise ValueError("Parameter 'document_type' is required.")
+        
+        valid_document_types = {"shareholders_list", "AD", "CD"}
+        if document_type not in valid_document_types:
+            raise ValueError(
+                f"Invalid document_type '{document_type}'. "
+                f"Valid values are: {', '.join(valid_document_types)}"
+            )
+
+        logger.debug(
+            "Fetching document for company_id=%s, document_type=%s",
+            company_id, document_type
+        )
+
+        # Construct query parameters
+        params = {
+            "api_key": self.api_key,
+            "company_id": company_id,
+            "document_type": document_type
+        }
+
+        url = f"{self.base_url}/fetch-document"
+
+        # Rate limiting
+        if self.rate_limit > 0:
+            elapsed = time.time() - self._last_request_time
+            if elapsed < self.rate_limit:
+                time.sleep(self.rate_limit - elapsed)
+
+        # Up to 3 retries with exponential backoff
+        max_retries = 3
+        for attempt in range(max_retries):
+            try:
+                with httpx.Client(timeout=self.timeout) as client:
+                    logger.debug("Making GET request to %s with params=%s", url, params)
+                    response = client.get(url, headers=self.headers, params=params)
+                    response.raise_for_status()
+                    
+                    # Check if response is PDF
+                    content_type = response.headers.get("content-type", "")
+                    if "application/pdf" not in content_type:
+                        # If not PDF, it might be an error response
+                        try:
+                            error_data = response.json()
+                            error_msg = error_data.get("error", "Unknown error")
+                            raise HandelsregisterError(f"API error: {error_msg}")
+                        except ValueError:
+                            raise InvalidResponseError(
+                                f"Expected PDF response but got {content_type}"
+                            )
+                    
+                    pdf_content = response.content
+                    self._last_request_time = time.time()
+                    
+                    # Save to file if output_file is provided
+                    if output_file:
+                        with open(output_file, "wb") as f:
+                            f.write(pdf_content)
+                        logger.info("Document saved to %s", output_file)
+                        return pdf_content
+                    
+                    return pdf_content
+
+            except httpx.RequestError as exc:
+                logger.warning("Request error (attempt %d/%d): %s", attempt + 1, max_retries, exc)
+                time.sleep(2 ** attempt)
+                if attempt == max_retries - 1:
+                    raise HandelsregisterError(f"Error while requesting document: {exc}") from exc
+
+            except httpx.HTTPStatusError as exc:
+                logger.warning("HTTP status error (attempt %d/%d): %s", attempt + 1, max_retries, exc)
+                if exc.response.status_code == 401:
+                    raise AuthenticationError("Invalid API key or unauthorized access.") from exc
+                time.sleep(2 ** attempt)
+                if attempt == max_retries - 1:
+                    raise HandelsregisterError(f"HTTP error occurred: {exc}") from exc
+
     # -------------------------------------------------------------------
     # Helper Methods
     # -------------------------------------------------------------------

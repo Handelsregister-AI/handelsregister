@@ -57,7 +57,7 @@ from handelsregister import Company
 
 # Create company object with desired features
 company = Company(
-    "BMW AG München",
+    "OroraTech GmbH München",
     features=[
         "related_persons",         # Get management information
         "financial_kpi",           # Get financial KPIs
@@ -85,6 +85,71 @@ if years:
     print(f"Employees ({recent_year}): {employees}")
 ```
 
+## 📄 Document Downloads
+
+The SDK supports downloading official PDF documents from the German Handelsregister:
+
+```python
+from handelsregister import Handelsregister, Company
+
+# Using the client directly
+client = Handelsregister()
+
+# First, get the company's entity_id
+result = client.fetch_organization(q="Konux GmbH München")
+entity_id = result["entity_id"]
+
+# Download shareholders list (Gesellschafterliste)
+client.fetch_document(
+    company_id=entity_id,
+    document_type="shareholders_list",
+    output_file="konux_shareholders.pdf"
+)
+
+# Download current excerpts (Aktuelle Daten)
+client.fetch_document(
+    company_id=entity_id,
+    document_type="AD",
+    output_file="konux_current.pdf"
+)
+
+# Download historical excerpts (Chronologische Daten)
+pdf_bytes = client.fetch_document(
+    company_id=entity_id,
+    document_type="CD"  # Returns bytes if no output_file specified
+)
+
+# Using the Company class (more convenient)
+company = Company("OroraTech GmbH München")
+
+# Download documents directly
+company.fetch_document(
+    document_type="shareholders_list",
+    output_file="ororatech_shareholders.pdf"
+)
+```
+
+### Available Document Types
+
+| Document Type | Description |
+|--------------|-------------|
+| `shareholders_list` | Gesellschafterliste (list of shareholders) |
+| `AD` | Aktuelle Daten (current company data) |
+| `CD` | Chronologische Daten (historical/chronological data) |
+
+### CLI Document Download
+
+```bash
+# Download shareholders list for a company
+$ handelsregister document "Konux GmbH München" --type shareholders_list --output konux_shareholders.pdf
+
+# Download current excerpts
+$ handelsregister document "OroraTech GmbH München" --type AD --output ororatech_current.pdf
+
+# Download historical data
+$ handelsregister document "Isar Aerospace SE" --type CD --output isar_history.pdf
+```
+
 ## 📊 Data Enrichment
 
 The SDK allows you to enrich datasets with company information:
@@ -95,9 +160,9 @@ import json
 
 # Sample data in a JSON file
 data = [
-    {"company_name": "BMW AG", "city": "München"},
     {"company_name": "Konux GmbH", "city": "München"},
-    {"company_name": "OroraTech GmbH", "city": "Walldorf"}
+    {"company_name": "OroraTech GmbH", "city": "München"},
+    {"company_name": "Isar Aerospace SE", "city": "Ottobrunn"}
 ]
 
 # Save to a file

@@ -322,3 +322,120 @@ class TestAdditionalFeatures:
             client.fetch_organization(q="A")
             client.fetch_organization(q="B")
             mock_time.sleep.assert_called()
+
+
+class TestFetchDocument:
+    def test_fetch_document_basic(self, mock_client):
+        """Test basic fetch_document call."""
+        client, mock_httpx = mock_client
+        
+        # Configure mock response for PDF
+        mock_response = MagicMock()
+        mock_response.headers = {"content-type": "application/pdf"}
+        mock_response.content = b"PDF content here"
+        mock_response.raise_for_status.return_value = None
+        
+        mock_session = MagicMock()
+        mock_session.get.return_value = mock_response
+        mock_httpx.return_value.__enter__.return_value = mock_session
+        
+        # Call the method
+        result = client.fetch_document(
+            company_id="test_entity_id",
+            document_type="shareholders_list"
+        )
+        
+        # Verify results
+        assert result == b"PDF content here"
+        mock_session.get.assert_called_once()
+        
+        # Check that parameters were passed correctly
+        args, kwargs = mock_session.get.call_args
+        assert kwargs["params"]["company_id"] == "test_entity_id"
+        assert kwargs["params"]["document_type"] == "shareholders_list"
+        assert kwargs["params"]["api_key"] == client.api_key
+
+    def test_fetch_document_with_output_file(self, mock_client, tmp_path):
+        """Test fetch_document with output file."""
+        client, mock_httpx = mock_client
+        output_file = tmp_path / "test_document.pdf"
+        
+        # Configure mock response for PDF
+        mock_response = MagicMock()
+        mock_response.headers = {"content-type": "application/pdf"}
+        mock_response.content = b"PDF content here"
+        mock_response.raise_for_status.return_value = None
+        
+        mock_session = MagicMock()
+        mock_session.get.return_value = mock_response
+        mock_httpx.return_value.__enter__.return_value = mock_session
+        
+        # Call the method with output file
+        result = client.fetch_document(
+            company_id="test_entity_id",
+            document_type="AD",
+            output_file=str(output_file)
+        )
+        
+        # Verify file was written
+        assert output_file.exists()
+        assert output_file.read_bytes() == b"PDF content here"
+        assert result == b"PDF content here"
+
+    def test_fetch_document_invalid_parameters(self, mock_client):
+        """Test fetch_document with invalid parameters."""
+        client, _ = mock_client
+        
+        # Test missing company_id
+        with pytest.raises(ValueError, match="Parameter 'company_id' is required"):
+            client.fetch_document(company_id="", document_type="AD")
+        
+        # Test missing document_type
+        with pytest.raises(ValueError, match="Parameter 'document_type' is required"):
+            client.fetch_document(company_id="test_id", document_type="")
+        
+        # Test invalid document_type
+        with pytest.raises(ValueError, match="Invalid document_type"):
+            client.fetch_document(company_id="test_id", document_type="invalid_type")
+
+    def test_fetch_document_error_response(self, mock_client):
+        """Test handling of error responses from the document endpoint."""
+        client, mock_httpx = mock_client
+        
+        # Configure mock response for error (JSON instead of PDF)
+        mock_response = MagicMock()
+        mock_response.headers = {"content-type": "application/json"}
+        mock_response.json.return_value = {"error": "Document not found"}
+        mock_response.raise_for_status.return_value = None
+        
+        mock_session = MagicMock()
+        mock_session.get.return_value = mock_response
+        mock_httpx.return_value.__enter__.return_value = mock_session
+        
+        # Call the method and expect HandelsregisterError
+        with pytest.raises(HandelsregisterError, match="API error: Document not found"):
+            client.fetch_document(
+                company_id="test_entity_id",
+                document_type="CD"
+            )
+
+    def test_fetch_document_non_json_error(self, mock_client):
+        """Test handling of non-JSON error responses."""
+        client, mock_httpx = mock_client
+        
+        # Configure mock response with neither PDF nor JSON
+        mock_response = MagicMock()
+        mock_response.headers = {"content-type": "text/html"}
+        mock_response.json.side_effect = ValueError("Not JSON")
+        mock_response.raise_for_status.return_value = None
+        
+        mock_session = MagicMock()
+        mock_session.get.return_value = mock_response
+        mock_httpx.return_value.__enter__.return_value = mock_session
+        
+        # Call the method and expect InvalidResponseError
+        with pytest.raises(InvalidResponseError, match="Expected PDF response but got text/html"):
+            client.fetch_document(
+                company_id="test_entity_id",
+                document_type="shareholders_list"
+            )

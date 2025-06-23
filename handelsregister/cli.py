@@ -174,6 +174,23 @@ def main():
     enrich_parser.add_argument("--feature", dest="features", action="append")
     enrich_parser.add_argument("--ai-search", dest="ai_search")
 
+    document_parser = subparsers.add_parser("document", help="Download company documents")
+    document_parser.add_argument("query", nargs="+", help="Company search query")
+    document_parser.add_argument(
+        "--type", 
+        dest="document_type", 
+        required=True,
+        choices=["shareholders_list", "AD", "CD"],
+        help="Document type: shareholders_list (Gesellschafterliste), AD (Aktuelle Daten), CD (Chronologische Daten)"
+    )
+    document_parser.add_argument(
+        "--output", 
+        dest="output_file", 
+        required=True,
+        help="Output PDF file path"
+    )
+    document_parser.add_argument("--ai-search", dest="ai_search", default="off")
+
     args = parser.parse_args()
 
     client = Handelsregister()
@@ -226,6 +243,55 @@ def main():
             output_file=args.output_file,
             output_type=args.output_type,
         )
+    elif args.command == "document":
+        query_string = " ".join(args.query)
+        
+        if RICH_AVAILABLE:
+            console = Console()
+            with console.status("[bold green]Fetching company data..."):
+                # First fetch the company to get entity_id
+                result = client.fetch_organization(
+                    q=query_string,
+                    ai_search=args.ai_search,
+                )
+        else:
+            print("Fetching company data...", flush=True)
+            result = client.fetch_organization(
+                q=query_string,
+                ai_search=args.ai_search,
+            )
+        
+        company_name = result.get("name", "Unknown Company")
+        entity_id = result.get("entity_id")
+        
+        if not entity_id:
+            if RICH_AVAILABLE:
+                console.print("[red]Error: Could not find entity_id for the company[/red]")
+            else:
+                print("Error: Could not find entity_id for the company")
+            return
+        
+        if RICH_AVAILABLE:
+            console.print(f"[green]Found company:[/green] {company_name}")
+            console.print(f"[green]Entity ID:[/green] {entity_id}")
+            
+            with console.status(f"[bold green]Downloading {args.document_type} document..."):
+                client.fetch_document(
+                    company_id=entity_id,
+                    document_type=args.document_type,
+                    output_file=args.output_file,
+                )
+            console.print(f"[green]✓ Document saved to:[/green] {args.output_file}")
+        else:
+            print(f"Found company: {company_name}")
+            print(f"Entity ID: {entity_id}")
+            print(f"Downloading {args.document_type} document...", flush=True)
+            client.fetch_document(
+                company_id=entity_id,
+                document_type=args.document_type,
+                output_file=args.output_file,
+            )
+            print(f"Document saved to: {args.output_file}")
     else:
         parser.print_help()
 

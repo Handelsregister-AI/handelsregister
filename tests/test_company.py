@@ -434,3 +434,60 @@ class TestCompanyWithRealAPI:
             # Verify we can access the data for that year
             kpi_data = company.get_financial_kpi_for_year(recent_year)
             assert kpi_data is not None
+
+
+class TestCompanyDocumentFetching:
+    """Tests for document fetching functionality."""
+    
+    def test_fetch_document_basic(self, company):
+        """Test basic document fetching."""
+        # Mock the client's fetch_document method
+        company._client.fetch_document.return_value = b"PDF content"
+        
+        # Fetch a document
+        result = company.fetch_document("shareholders_list")
+        
+        # Verify the call
+        company._client.fetch_document.assert_called_once_with(
+            company_id=company.entity_id,
+            document_type="shareholders_list",
+            output_file=None
+        )
+        assert result == b"PDF content"
+    
+    def test_fetch_document_with_output_file(self, company):
+        """Test document fetching with output file."""
+        # Mock the client's fetch_document method
+        company._client.fetch_document.return_value = b"PDF content"
+        
+        # Fetch a document with output file
+        result = company.fetch_document("AD", output_file="test.pdf")
+        
+        # Verify the call
+        company._client.fetch_document.assert_called_once_with(
+            company_id=company.entity_id,
+            document_type="AD",
+            output_file="test.pdf"
+        )
+        assert result == b"PDF content"
+    
+    def test_fetch_document_without_entity_id(self, mock_client):
+        """Test document fetching when entity_id is missing."""
+        # Create a response without entity_id
+        response_without_id = {"name": "Test Company", "status": "ACTIVE"}
+        mock_client.fetch_organization.return_value = response_without_id
+        
+        company = Company("Test Company", client=mock_client)
+        
+        # Attempting to fetch document should raise ValueError
+        with pytest.raises(ValueError, match="Cannot fetch document: entity_id is not available"):
+            company.fetch_document("CD")
+    
+    def test_fetch_document_error_propagation(self, company):
+        """Test that errors from client are properly propagated."""
+        # Mock the client to raise an error
+        company._client.fetch_document.side_effect = HandelsregisterError("Document not found")
+        
+        # The error should be propagated
+        with pytest.raises(HandelsregisterError, match="Document not found"):
+            company.fetch_document("shareholders_list")
