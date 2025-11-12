@@ -1,4 +1,5 @@
 import logging
+from dataclasses import dataclass, field
 from typing import Dict, Any, Optional, List, Union, Tuple, TypeVar, Generic, Callable
 from datetime import datetime
 
@@ -8,6 +9,83 @@ from .exceptions import HandelsregisterError
 logger = logging.getLogger(__name__)
 
 T = TypeVar('T')
+
+
+@dataclass
+class ShareholderEntry:
+    """
+    Structured representation of a single shareholder entry returned by the API.
+    """
+    shareholder: Dict[str, Any]
+    contribution: Dict[str, Any]
+    contribution_ratio: Optional[float] = None
+    raw: Dict[str, Any] = field(default_factory=dict)
+    
+    @property
+    def display_name(self) -> str:
+        """Return a best-effort human readable name."""
+        entity_name = self.shareholder.get("entity_name")
+        if entity_name:
+            return entity_name
+        
+        first_name = self.shareholder.get("first_name")
+        last_name = self.shareholder.get("last_name")
+        if first_name or last_name:
+            return " ".join(filter(None, [first_name, last_name])).strip()
+        
+        return self.shareholder.get("name") or "Unknown shareholder"
+    
+    @property
+    def address(self) -> str:
+        """Return the registered address of the shareholder if available."""
+        return self.shareholder.get("address", "")
+    
+    @property
+    def contribution_amount(self) -> Optional[Union[int, float]]:
+        """Return the contributed capital amount."""
+        return self.contribution.get("amount")
+    
+    @property
+    def contribution_currency(self) -> str:
+        """Return the contributed capital currency."""
+        return self.contribution.get("currency", "")
+    
+    @property
+    def percentage(self) -> Optional[float]:
+        """Return the ownership share expressed as a ratio (0-1)."""
+        return self.contribution_ratio
+
+
+@dataclass
+class ShareholderInfo:
+    """
+    Container for shareholder information including total capital and individual entries.
+    """
+    entries: List[ShareholderEntry] = field(default_factory=list)
+    total_capital: Optional[Dict[str, Any]] = None
+    raw: Dict[str, Any] = field(default_factory=dict)
+    
+    def __bool__(self) -> bool:
+        return bool(self.entries or self.total_capital)
+    
+    @property
+    def total_capital_amount(self) -> Optional[Union[int, float]]:
+        """Return the total capital amount if provided."""
+        if isinstance(self.total_capital, dict):
+            return self.total_capital.get("amount")
+        return None
+    
+    @property
+    def total_capital_currency(self) -> str:
+        """Return the total capital currency if provided."""
+        if isinstance(self.total_capital, dict):
+            return self.total_capital.get("currency", "")
+        return ""
+    
+    def as_dict(self) -> Dict[str, Any]:
+        """Expose the original API payload."""
+        return self.raw
+
 
 class Company:
     """
@@ -56,6 +134,7 @@ class Company:
                          - "financial_kpi"
                          - "balance_sheet_accounts"
                          - "profit_and_loss_account"
+                         - "shareholders"
         :param ai_search: Whether to use AI-based search, defaults to "off".
         :param kwargs: Additional parameters to pass to fetch_organization.
         :raises HandelsregisterError: If there was an error fetching the company data.
@@ -320,6 +399,29 @@ class Company:
                     p = {**p, "label": label}
                 result.append(p)
         return result
+    
+    # --------------------------------
+    # Shareholder information
+    # --------------------------------
+    
+    @property
+    def shareholders(self) -> ShareholderInfo:
+        """Get shareholder information with structured helper objects."""
+        data = self._data.get("shareholders") or {}
+        entries: List[ShareholderEntry] = []
+        for entry in data.get("entries", []):
+            if not isinstance(entry, dict):
+                continue
+            entries.append(
+                ShareholderEntry(
+                    shareholder=entry.get("shareholder", {}),
+                    contribution=entry.get("contribution", {}),
+                    contribution_ratio=entry.get("contribution_ratio"),
+                    raw=entry
+                )
+            )
+        total_capital = data.get("total_capital")
+        return ShareholderInfo(entries=entries, total_capital=total_capital, raw=data)
     
     # --------------------------------
     # Financial information

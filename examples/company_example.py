@@ -11,7 +11,6 @@ To run:
 python company_example.py
 """
 import os
-from pprint import pprint
 from handelsregister import Company
 
 # Set your API key (or use environment variable HANDELSREGISTER_API_KEY)
@@ -21,12 +20,13 @@ def main():
     # Create a Company object with the features we want
     print("🔍 Looking up company information...")
     company = Company(
-        "KONUX GmbH München",
+        "OroraTech GmbH München",
         features=[
             "related_persons",         # Get management information
             "financial_kpi",           # Get financial key performance indicators
             "balance_sheet_accounts",  # Get balance sheet data
-            "profit_and_loss_account", # Get profit and loss data
+            "profit_and_loss_account", # Get profit and loss data,
+            "shareholders",             # Get shareholder information
         ],
         ai_search="off"                # Disable AI-based search
     )
@@ -47,6 +47,38 @@ def main():
         name = person.get("name", "Unknown")
         start_date = person.get("start_date", "Unknown")
         print(f"  {name} - {role} (since {start_date})")
+    
+    # Shareholder information
+    print("\n🤝 Shareholders:")
+    shareholders_info = company.shareholders
+    if shareholders_info:
+        total_amount = shareholders_info.total_capital_amount
+        total_currency = shareholders_info.total_capital_currency
+        if total_amount is not None:
+            currency_suffix = f" {total_currency}" if total_currency else ""
+            print(f"  Total Capital: {total_amount}{currency_suffix}")
+        
+        if shareholders_info.entries:
+            for idx, entry in enumerate(shareholders_info.entries, start=1):
+                label = f"  {idx}. {entry.display_name}"
+                
+                amount = entry.contribution_amount
+                currency = entry.contribution_currency
+                if amount is not None:
+                    currency_suffix = f" {currency}" if currency else ""
+                    label += f" — Contribution: {amount}{currency_suffix}"
+                
+                if entry.percentage is not None:
+                    label += f" ({entry.percentage:.2%} share)"
+                
+                print(label)
+                
+                if entry.address:
+                    print(f"     Address: {entry.address}")
+        else:
+            print("  No shareholder entries available")
+    else:
+        print("  No shareholder information available")
     
     # Financial information
     print("\n💰 Financial Information:")

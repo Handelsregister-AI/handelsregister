@@ -3,7 +3,7 @@ import os
 import pytest
 from unittest.mock import MagicMock, patch
 
-from handelsregister import Company, Handelsregister
+from handelsregister import Company, Handelsregister, ShareholderInfo, ShareholderEntry
 from handelsregister.exceptions import HandelsregisterError
 
 
@@ -261,6 +261,49 @@ class TestCompanyRelatedPersonsProperties:
         assert len(current_managing_directors) > 0
         assert all(p["label"] == "MANAGING_DIRECTOR" for p in current_managing_directors)
         assert len(current_managing_directors) <= len(managing_directors)
+
+
+class TestCompanyShareholderProperties:
+    """Tests for shareholder information property access."""
+    
+    def test_shareholders_property_default(self, company):
+        """Company without shareholder data returns empty info object."""
+        shareholders = company.shareholders
+        assert isinstance(shareholders, ShareholderInfo)
+        assert bool(shareholders) is False
+        assert shareholders.entries == []
+        assert shareholders.total_capital is None
+    
+    def test_shareholder_info_with_data(self, company):
+        """Shareholder helper methods expose structured entries."""
+        sample_shareholders = {
+            "entries": [
+                {
+                    "contribution": {"amount": 100, "currency": "EUR"},
+                    "contribution_ratio": 0.25,
+                    "shareholder": {
+                        "entity_name": "Sample Holder GmbH",
+                        "address": "München"
+                    }
+                }
+            ],
+            "total_capital": {"amount": 400, "currency": "EUR"}
+        }
+        company._data["shareholders"] = sample_shareholders
+        shareholders = company.shareholders
+        assert isinstance(shareholders, ShareholderInfo)
+        assert bool(shareholders) is True
+        assert shareholders.total_capital == sample_shareholders["total_capital"]
+        assert shareholders.as_dict() == sample_shareholders
+        assert len(shareholders.entries) == 1
+        
+        entry = shareholders.entries[0]
+        assert isinstance(entry, ShareholderEntry)
+        assert entry.display_name == "Sample Holder GmbH"
+        assert entry.contribution_amount == 100
+        assert entry.contribution_currency == "EUR"
+        assert entry.percentage == 0.25
+        assert entry.address == "München"
 
 
 class TestCompanyFinancialProperties:
