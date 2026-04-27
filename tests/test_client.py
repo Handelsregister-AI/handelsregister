@@ -25,10 +25,24 @@ class TestClientInitialization:
             assert client.api_key == env_api_key
 
     def test_init_without_api_key(self):
-        """Test that initialization fails without API key."""
-        with patch.dict(os.environ, {"HANDELSREGISTER_API_KEY": ""}):
+        """Test that initialization fails without API key or bearer token."""
+        with patch.dict(
+            os.environ,
+            {"HANDELSREGISTER_API_KEY": "", "HANDELSREGISTER_BEARER_TOKEN": ""},
+        ):
             with pytest.raises(AuthenticationError):
                 Handelsregister()
+
+    def test_init_with_bearer_token(self):
+        """Test client initialization with a bearer token."""
+        with patch.dict(
+            os.environ,
+            {"HANDELSREGISTER_API_KEY": "", "HANDELSREGISTER_BEARER_TOKEN": ""},
+        ):
+            client = Handelsregister(bearer_token="secret-token")
+            assert client.bearer_token == "secret-token"
+            assert client.headers["Authorization"] == "Bearer secret-token"
+            assert "x-api-key" not in client.headers
 
     def test_init_with_custom_values(self, api_key):
         """Test initialization with custom timeout and base URL."""
@@ -61,15 +75,17 @@ class TestFetchOrganization:
         
         # Call the method
         result = client.fetch_organization(q="OroraTech GmbH")
-        
+
         # Verify results
         assert result == sample_organization_response
         mock_session.get.assert_called_once()
-        
+
         # Check that parameters were passed correctly
         args, kwargs = mock_session.get.call_args
         assert kwargs["params"]["q"] == "OroraTech GmbH"
-        assert kwargs["params"]["api_key"] == client.api_key
+        # Auth is sent via x-api-key header, not as a query parameter.
+        assert "api_key" not in kwargs["params"]
+        assert kwargs["headers"]["x-api-key"] == client.api_key
 
     def test_fetch_organization_with_features(self, mock_client, sample_organization_response):
         """Test fetch_organization with feature flags."""
@@ -93,7 +109,7 @@ class TestFetchOrganization:
         
         # Check features were passed correctly
         args, kwargs = mock_session.get.call_args
-        assert kwargs["params"]["feature"] == features
+        assert list(kwargs["params"]["feature"]) == features
 
     def test_missing_query_parameter(self, mock_client):
         """Test that fetch_organization raises an error without a query."""
@@ -244,10 +260,11 @@ class TestAdditionalFeatures:
 
         called = {}
 
-        def fake_fetch(self, q, features=None, ai_search=None):
+        def fake_fetch(self, q, features=None, ai_search=None, realtime_mode=None):
             called['q'] = q
             called['features'] = features
             called['ai_search'] = ai_search
+            called['realtime_mode'] = realtime_mode
             return {"ok": True}
 
         monkeypatch.setattr("handelsregister.client.Handelsregister.fetch_organization", fake_fetch)
@@ -353,7 +370,8 @@ class TestFetchDocument:
         args, kwargs = mock_session.get.call_args
         assert kwargs["params"]["company_id"] == "test_entity_id"
         assert kwargs["params"]["document_type"] == "shareholders_list"
-        assert kwargs["params"]["api_key"] == client.api_key
+        assert "api_key" not in kwargs["params"]
+        assert kwargs["headers"]["x-api-key"] == client.api_key
 
     def test_fetch_document_with_output_file(self, mock_client, tmp_path):
         """Test fetch_document with output file."""
@@ -422,20 +440,150 @@ class TestFetchDocument:
     def test_fetch_document_non_json_error(self, mock_client):
         """Test handling of non-JSON error responses."""
         client, mock_httpx = mock_client
-        
+
         # Configure mock response with neither PDF nor JSON
         mock_response = MagicMock()
         mock_response.headers = {"content-type": "text/html"}
         mock_response.json.side_effect = ValueError("Not JSON")
         mock_response.raise_for_status.return_value = None
-        
+
         mock_session = MagicMock()
         mock_session.get.return_value = mock_response
         mock_httpx.return_value.__enter__.return_value = mock_session
-        
+
         # Call the method and expect InvalidResponseError
         with pytest.raises(InvalidResponseError, match="Expected PDF response but got text/html"):
             client.fetch_document(
                 company_id="test_entity_id",
                 document_type="shareholders_list"
             )
+
+    def test_fetch_document_articles_of_association(self, mock_client):
+        """articles_of_association is an accepted document type."""
+        client, mock_httpx = mock_client
+
+        mock_response = MagicMock()
+        mock_response.headers = {"content-type": "application/pdf"}
+        mock_response.content = b"PDF content"
+        mock_response.raise_for_status.return_value = None
+
+        mock_session = MagicMock()
+        mock_session.get.return_value = mock_response
+        mock_httpx.return_value.__enter__.return_value = mock_session
+
+        result = client.fetch_document(
+            company_id="test_entity_id",
+            document_type="articles_of_association",
+        )
+        assert result == b"PDF content"
+        args, kwargs = mock_session.get.call_args
+        assert kwargs["params"]["document_type"] == "articles_of_association"
+
+
+class TestFetchPerson:
+    def test_fetch_person_basic(self, mock_client):
+        """fetch_person sends person_q and organization_q."""
+        client, mock_httpx = mock_client
+
+        person_payload = {"entity_id": "abc", "name": "Max Mustermann"}
+        mock_response = MagicMock()
+        mock_response.json.return_value = person_payload
+        mock_response.raise_for_status.return_value = None
+
+        mock_session = MagicMock()
+        mock_session.get.return_value = mock_response
+        mock_httpx.return_value.__enter__.return_value = mock_session
+
+        result = client.fetch_person(
+            person_q="Max Mustermann",
+            organization_q="Beispielwerk Analytics GmbH",
+            features=["shareholdings"],
+        )
+
+        assert result == person_payload
+        args, kwargs = mock_session.get.call_args
+        params = kwargs["params"]
+        assert params["person_q"] == "Max Mustermann"
+        assert params["organization_q"] == "Beispielwerk Analytics GmbH"
+        assert list(params["feature"]) == ["shareholdings"]
+
+    def test_fetch_person_validates_inputs(self, mock_client):
+        client, _ = mock_client
+        with pytest.raises(ValueError, match="person_q"):
+            client.fetch_person(person_q="", organization_q="A Company")
+        with pytest.raises(ValueError, match="organization_q"):
+            client.fetch_person(person_q="Max Mustermann", organization_q="")
+
+
+class TestSearchOrganizations:
+    def test_search_basic(self, mock_client):
+        client, mock_httpx = mock_client
+
+        payload = {"results": [{"entity_id": "x"}], "total": 1}
+        mock_response = MagicMock()
+        mock_response.json.return_value = payload
+        mock_response.raise_for_status.return_value = None
+
+        mock_session = MagicMock()
+        mock_session.get.return_value = mock_response
+        mock_httpx.return_value.__enter__.return_value = mock_session
+
+        result = client.search_organizations(q="tech", limit=5, filters={"postal_code": "80992"})
+        assert result == payload
+
+        args, kwargs = mock_session.get.call_args
+        params = kwargs["params"]
+        assert params["q"] == "tech"
+        assert params["limit"] == 5
+        assert json.loads(params["filters"]) == {"postal_code": "80992"}
+
+    def test_search_validates_inputs(self, mock_client):
+        client, _ = mock_client
+        with pytest.raises(ValueError, match="min. 2 characters"):
+            client.search_organizations(q="a")
+        with pytest.raises(ValueError, match="'limit'"):
+            client.search_organizations(q="valid", limit=0)
+        with pytest.raises(ValueError, match="'skip'"):
+            client.search_organizations(q="valid", skip=-1)
+
+
+class TestTokenManagement:
+    def test_create_token(self, mock_client):
+        client, mock_httpx = mock_client
+
+        mock_response = MagicMock()
+        mock_response.json.return_value = {"token": "tok_abc"}
+        mock_response.raise_for_status.return_value = None
+
+        mock_session = MagicMock()
+        mock_session.post.return_value = mock_response
+        mock_httpx.return_value.__enter__.return_value = mock_session
+
+        result = client.create_token(
+            token_name="My Token",
+            abilities=["*"],
+            expires_at="2026-01-01 00:00:00",
+        )
+        assert result == {"token": "tok_abc"}
+
+        args, kwargs = mock_session.post.call_args
+        assert kwargs["json"] == {
+            "token_name": "My Token",
+            "abilities": ["*"],
+            "expires_at": "2026-01-01 00:00:00",
+        }
+
+    def test_revoke_token(self, mock_client):
+        client, mock_httpx = mock_client
+
+        mock_response = MagicMock()
+        mock_response.content = b""
+        mock_response.raise_for_status.return_value = None
+
+        mock_session = MagicMock()
+        mock_session.delete.return_value = mock_response
+        mock_httpx.return_value.__enter__.return_value = mock_session
+
+        assert client.revoke_token(42) == {}
+        args, _ = mock_session.delete.call_args
+        assert args[0].endswith("/auth/tokens/42")

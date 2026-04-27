@@ -7,7 +7,7 @@ from handelsregister.client import Handelsregister
 
 
 def test_fetch_json(capsys, sample_organization_response, monkeypatch):
-    def fake_fetch(self, q, features=None, ai_search=None):
+    def fake_fetch(self, q, features=None, ai_search=None, realtime_mode=None):
         return sample_organization_response
 
     monkeypatch.setattr(Handelsregister, "fetch_organization", fake_fetch)
@@ -19,7 +19,7 @@ def test_fetch_json(capsys, sample_organization_response, monkeypatch):
 
 
 def test_fetch_text(capsys, sample_organization_response, monkeypatch):
-    def fake_fetch(self, q, features=None, ai_search=None):
+    def fake_fetch(self, q, features=None, ai_search=None, realtime_mode=None):
         return sample_organization_response
 
     monkeypatch.setattr(Handelsregister, "fetch_organization", fake_fetch)
@@ -34,7 +34,7 @@ def test_fetch_text(capsys, sample_organization_response, monkeypatch):
 def test_fetch_defaults(monkeypatch, sample_organization_response):
     called = {}
 
-    def fake_fetch(self, q, features=None, ai_search=None):
+    def fake_fetch(self, q, features=None, ai_search=None, realtime_mode=None):
         called['features'] = features
         called['ai_search'] = ai_search
         return sample_organization_response

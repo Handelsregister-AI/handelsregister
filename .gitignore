@@ -60,3 +60,6 @@ settings_local.py
 # Cached files
 .cache/
 .git-credentials
+
+# Claude Code local state (may contain transcripts/permissions with secrets)
+.claude/

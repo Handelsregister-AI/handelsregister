@@ -5,7 +5,7 @@ import logging
 import hashlib
 import httpx
 from datetime import datetime
-from typing import List, Optional, Dict, Any
+from typing import List, Optional, Dict, Any, Union
 from pathlib import Path
 from glob import glob
 
@@ -21,14 +21,23 @@ logger = logging.getLogger(__name__)
 
 BASE_URL = "https://handelsregister.ai/api/v1/"
 
+
 class Handelsregister:
     """
     A modern Python client for interacting with handelsregister.ai.
 
+    Supports both API-key authentication (``x-api-key`` header, recommended)
+    and Bearer token authentication (``Authorization: Bearer ...``).
+
     Usage:
         from handelsregister import Handelsregister
-        
+
+        # API key auth
         client = Handelsregister(api_key="YOUR_API_KEY")
+
+        # Bearer token auth
+        client = Handelsregister(bearer_token="YOUR_BEARER_TOKEN")
+
         result = client.fetch_organization(q="OroraTech GmbH aus München")
         print(result)
     """
@@ -36,6 +45,7 @@ class Handelsregister:
     def __init__(
         self,
         api_key: Optional[str] = None,
+        bearer_token: Optional[str] = None,
         timeout: float = 90.0,
         base_url: str = BASE_URL,
         cache_enabled: bool = True,
@@ -44,28 +54,42 @@ class Handelsregister:
         """
         Initialize the Handelsregister client.
 
-        :param api_key: The API key provided by handelsregister.ai (required if
-                        HANDELSREGISTER_API_KEY env var is not set).
+        :param api_key: The API key provided by handelsregister.ai. Falls back to
+                        the ``HANDELSREGISTER_API_KEY`` env var if not given.
+        :param bearer_token: An API bearer token. Falls back to the
+                             ``HANDELSREGISTER_BEARER_TOKEN`` env var. When set,
+                             takes precedence over ``api_key``.
         :param timeout: Timeout for HTTP requests (in seconds).
         :param base_url: Base URL for the handelsregister.ai API.
+        :param cache_enabled: Whether to cache identical requests in-memory.
+        :param rate_limit: Minimum seconds between consecutive requests.
         """
-        # Support reading the API key from environment if none provided
         env_api_key = os.getenv("HANDELSREGISTER_API_KEY", "")
+        env_bearer = os.getenv("HANDELSREGISTER_BEARER_TOKEN", "")
+
+        if not bearer_token:
+            bearer_token = env_bearer
         if not api_key:
             api_key = env_api_key
 
-        if not api_key:
+        if not api_key and not bearer_token:
             raise AuthenticationError(
-                "An API key is required to use the Handelsregister client. "
-                "Either pass it explicitly or set HANDELSREGISTER_API_KEY."
+                "An API key or Bearer token is required to use the Handelsregister client. "
+                "Pass api_key/bearer_token explicitly or set HANDELSREGISTER_API_KEY / "
+                "HANDELSREGISTER_BEARER_TOKEN."
             )
 
         self.api_key = api_key
+        self.bearer_token = bearer_token
         self.timeout = timeout
         self.base_url = base_url.rstrip("/")
         self.headers = {
             "User-Agent": f"handelsregister-python-client/{__version__}"
         }
+        if self.bearer_token:
+            self.headers["Authorization"] = f"Bearer {self.bearer_token}"
+        elif self.api_key:
+            self.headers["x-api-key"] = self.api_key
 
         self.cache_enabled = cache_enabled
         self.rate_limit = rate_limit
@@ -74,80 +98,47 @@ class Handelsregister:
 
         logger.debug("Handelsregister client initialized with base_url=%s", self.base_url)
 
-    def fetch_organization(
-        self,
-        q: str,
-        features: Optional[List[str]] = None,
-        ai_search: Optional[str] = None,
-        **kwargs
-    ) -> Dict[str, Any]:
-        """
-        Fetch organization data from handelsregister.ai.
+    # -------------------------------------------------------------------
+    # Core request helpers
+    # -------------------------------------------------------------------
 
-        :param q: The search query (company name, location, etc.). (required)
-        :param features: A list of desired feature flags, e.g.:
-                         ["related_persons", "publications", "financial_kpi",
-                          "balance_sheet_accounts", "profit_and_loss_account"]
-        :param ai_search: If "on-default", uses the AI-based search (optional).
-        :param kwargs: Additional query parameters that the API supports.
-        :return: Parsed JSON response as a Python dictionary.
-        :raises HandelsregisterError: For any request or response failures.
-        """
-        if not q:
-            raise ValueError("Parameter 'q' is required.")
-
-        logger.debug("Fetching organization data for q=%s, features=%s, ai_search=%s", q, features, ai_search)
-
-        # Construct query parameters
-        params = {
-            "api_key": self.api_key,
-            "q": q
-        }
-
-        if features:
-            # If the API expects multiple 'feature' parameters:
-            for feature in features:
-                params.setdefault("feature", []).append(feature)
-
-        if ai_search:
-            params["ai_search"] = ai_search
-
-        # Merge any additional user-supplied kwargs into params
-        for key, value in kwargs.items():
-            params[key] = value
-
-        url = f"{self.base_url}/fetch-organization"
-
-        cache_key = (
-            q,
-            tuple(sorted(features)) if features else (),
-            ai_search,
-            tuple(sorted(kwargs.items())),
-        )
-
-        if self.cache_enabled and cache_key in self._cache:
-            logger.debug("Returning cached result for %s", q)
-            return self._cache[cache_key]
-
-        # Rate limiting
+    def _respect_rate_limit(self) -> None:
         if self.rate_limit > 0:
             elapsed = time.time() - self._last_request_time
             if elapsed < self.rate_limit:
                 time.sleep(self.rate_limit - elapsed)
 
-        # Up to 3 retries with exponential backoff
-        max_retries = 3
+    def _request(
+        self,
+        path: str,
+        params: Dict[str, Any],
+        max_retries: int = 3,
+        expect_json: bool = True,
+    ) -> Any:
+        """
+        Send a GET request to the API, retrying on transient errors.
+
+        :param path: Path segment (e.g. ``"fetch-organization"``).
+        :param params: Query parameters.
+        :param max_retries: How many times to retry on network errors.
+        :param expect_json: If False, returns the raw ``httpx.Response``.
+        :return: Parsed JSON (dict/list) or the ``httpx.Response`` when
+                 ``expect_json`` is False.
+        """
+        url = f"{self.base_url}/{path.lstrip('/')}"
+
+        self._respect_rate_limit()
+
         for attempt in range(max_retries):
             try:
                 with httpx.Client(timeout=self.timeout) as client:
                     logger.debug("Making GET request to %s with params=%s", url, params)
                     response = client.get(url, headers=self.headers, params=params)
                     response.raise_for_status()
-                    data = response.json()
                     self._last_request_time = time.time()
-                    if self.cache_enabled:
-                        self._cache[cache_key] = data
-                    return data
+                    if not expect_json:
+                        return response
+                    return response.json()
 
             except httpx.RequestError as exc:
                 logger.warning("Request error (attempt %d/%d): %s", attempt + 1, max_retries, exc)
@@ -164,15 +155,365 @@ class Handelsregister:
                     raise HandelsregisterError(f"HTTP error occurred: {exc}") from exc
 
             except ValueError as exc:
-                # Could not parse JSON
                 logger.error("Invalid JSON response: %s", exc)
                 raise InvalidResponseError(f"Received non-JSON response: {exc}") from exc
+
+    def _post(
+        self,
+        path: str,
+        json_body: Optional[Dict[str, Any]] = None,
+        max_retries: int = 3,
+    ) -> Any:
+        """Send a POST request with a JSON body."""
+        url = f"{self.base_url}/{path.lstrip('/')}"
+        self._respect_rate_limit()
+
+        for attempt in range(max_retries):
+            try:
+                with httpx.Client(timeout=self.timeout) as client:
+                    response = client.post(url, headers=self.headers, json=json_body or {})
+                    response.raise_for_status()
+                    self._last_request_time = time.time()
+                    return response.json()
+            except httpx.RequestError as exc:
+                logger.warning("Request error (attempt %d/%d): %s", attempt + 1, max_retries, exc)
+                time.sleep(2 ** attempt)
+                if attempt == max_retries - 1:
+                    raise HandelsregisterError(f"Error while requesting data: {exc}") from exc
+            except httpx.HTTPStatusError as exc:
+                if exc.response.status_code == 401:
+                    raise AuthenticationError("Invalid API key or unauthorized access.") from exc
+                time.sleep(2 ** attempt)
+                if attempt == max_retries - 1:
+                    raise HandelsregisterError(f"HTTP error occurred: {exc}") from exc
+            except ValueError as exc:
+                raise InvalidResponseError(f"Received non-JSON response: {exc}") from exc
+
+    def _delete(
+        self,
+        path: str,
+        max_retries: int = 3,
+    ) -> Any:
+        """Send a DELETE request."""
+        url = f"{self.base_url}/{path.lstrip('/')}"
+        self._respect_rate_limit()
+
+        for attempt in range(max_retries):
+            try:
+                with httpx.Client(timeout=self.timeout) as client:
+                    response = client.delete(url, headers=self.headers)
+                    response.raise_for_status()
+                    self._last_request_time = time.time()
+                    if not response.content:
+                        return {}
+                    return response.json()
+            except httpx.RequestError as exc:
+                time.sleep(2 ** attempt)
+                if attempt == max_retries - 1:
+                    raise HandelsregisterError(f"Error while requesting data: {exc}") from exc
+            except httpx.HTTPStatusError as exc:
+                if exc.response.status_code == 401:
+                    raise AuthenticationError("Invalid API key or unauthorized access.") from exc
+                time.sleep(2 ** attempt)
+                if attempt == max_retries - 1:
+                    raise HandelsregisterError(f"HTTP error occurred: {exc}") from exc
+            except ValueError as exc:
+                raise InvalidResponseError(f"Received non-JSON response: {exc}") from exc
+
+    # -------------------------------------------------------------------
+    # Public endpoints
+    # -------------------------------------------------------------------
+
+    def fetch_organization(
+        self,
+        q: str,
+        features: Optional[List[str]] = None,
+        ai_search: Optional[str] = None,
+        realtime_mode: Optional[str] = None,
+        **kwargs,
+    ) -> Dict[str, Any]:
+        """
+        Fetch organization data from handelsregister.ai.
+
+        :param q: The search query (company name, register number, etc.). Required.
+        :param features: Optional feature flags. Supported values include::
+
+                related_persons, publications, financial_kpi,
+                balance_sheet_accounts, profit_and_loss_account,
+                annual_financial_statements, annual_financial_statements__html,
+                insolvency_publications, news, website_content,
+                shareholders, ubos, shareholdings
+
+        :param ai_search: Pass ``"on-default"`` to enable AI-based search.
+        :param realtime_mode: Pass ``"handelsregister-default"`` to enable live
+                              lookups against the Handelsregister (+10 credits).
+        :param kwargs: Additional query parameters supported by the API.
+        :return: Parsed JSON response as a dictionary.
+        :raises HandelsregisterError: On request or response failure.
+        """
+        if not q:
+            raise ValueError("Parameter 'q' is required.")
+
+        logger.debug(
+            "Fetching organization data for q=%s, features=%s, ai_search=%s, realtime_mode=%s",
+            q, features, ai_search, realtime_mode,
+        )
+
+        params: Dict[str, Any] = {"q": q}
+
+        if features:
+            params["feature"] = list(features)
+        if ai_search:
+            params["ai_search"] = ai_search
+        if realtime_mode:
+            params["realtime_mode"] = realtime_mode
+
+        for key, value in kwargs.items():
+            params[key] = value
+
+        cache_key = (
+            "fetch-organization",
+            q,
+            tuple(sorted(features)) if features else (),
+            ai_search,
+            realtime_mode,
+            tuple(sorted((k, self._stable(v)) for k, v in kwargs.items())),
+        )
+
+        if self.cache_enabled and cache_key in self._cache:
+            logger.debug("Returning cached result for %s", q)
+            return self._cache[cache_key]
+
+        data = self._request("fetch-organization", params=params)
+
+        if self.cache_enabled:
+            self._cache[cache_key] = data
+        return data
+
+    def fetch_person(
+        self,
+        person_q: str,
+        organization_q: str,
+        features: Optional[List[str]] = None,
+        **kwargs,
+    ) -> Dict[str, Any]:
+        """
+        Fetch a person profile from handelsregister.ai.
+
+        Combines Handelsregister records with public web data. The server always
+        runs AI search for this endpoint; the 15 base credits include the
+        AI enrichment.
+
+        :param person_q: Full name of the person (required, min. 2 chars).
+        :param organization_q: Company context used to disambiguate common names
+                               (required, min. 2 chars).
+        :param features: Optional feature list. Currently only ``"shareholdings"``
+                         is supported (+5 credits when data is returned).
+        :param kwargs: Additional query parameters supported by the API.
+        :return: Parsed JSON response as a dictionary.
+        """
+        if not person_q or len(person_q.strip()) < 2:
+            raise ValueError("Parameter 'person_q' is required (min. 2 characters).")
+        if not organization_q or len(organization_q.strip()) < 2:
+            raise ValueError("Parameter 'organization_q' is required (min. 2 characters).")
+
+        params: Dict[str, Any] = {
+            "person_q": person_q,
+            "organization_q": organization_q,
+        }
+        if features:
+            params["feature"] = list(features)
+        for key, value in kwargs.items():
+            params[key] = value
+
+        cache_key = (
+            "fetch-person",
+            person_q,
+            organization_q,
+            tuple(sorted(features)) if features else (),
+            tuple(sorted((k, self._stable(v)) for k, v in kwargs.items())),
+        )
+        if self.cache_enabled and cache_key in self._cache:
+            return self._cache[cache_key]
+
+        data = self._request("fetch-person", params=params)
+
+        if self.cache_enabled:
+            self._cache[cache_key] = data
+        return data
+
+    def search_organizations(
+        self,
+        q: str,
+        skip: int = 0,
+        limit: int = 10,
+        filters: Optional[Dict[str, Any]] = None,
+        **kwargs,
+    ) -> Dict[str, Any]:
+        """
+        Search German organizations.
+
+        :param q: Search query (min. 2 characters, required).
+        :param skip: Pagination offset (default 0).
+        :param limit: Results per page (default 10, max 100).
+        :param filters: Filter object; currently supports ``postal_code``,
+                        e.g. ``{"postal_code": "80992"}``.
+        :param kwargs: Additional query parameters supported by the API.
+        :return: Parsed JSON response (``{"results": [...], "total": int, ...}``).
+        """
+        if not q or len(q.strip()) < 2:
+            raise ValueError("Parameter 'q' is required (min. 2 characters).")
+        if limit is not None and (limit < 1 or limit > 100):
+            raise ValueError("Parameter 'limit' must be between 1 and 100.")
+        if skip is not None and skip < 0:
+            raise ValueError("Parameter 'skip' must be >= 0.")
+
+        params: Dict[str, Any] = {
+            "q": q,
+            "skip": skip,
+            "limit": limit,
+        }
+        if filters:
+            params["filters"] = json.dumps(filters, ensure_ascii=False)
+        for key, value in kwargs.items():
+            params[key] = value
+
+        cache_key = (
+            "search-organizations",
+            q,
+            skip,
+            limit,
+            tuple(sorted(filters.items())) if filters else (),
+            tuple(sorted((k, self._stable(v)) for k, v in kwargs.items())),
+        )
+        if self.cache_enabled and cache_key in self._cache:
+            return self._cache[cache_key]
+
+        data = self._request("search-organizations", params=params)
+
+        if self.cache_enabled:
+            self._cache[cache_key] = data
+        return data
 
     def fetch_organization_df(self, *args, **kwargs):
         """Fetch organization data and return a pandas DataFrame."""
         data = self.fetch_organization(*args, **kwargs)
         import pandas as pd
         return pd.json_normalize(data)
+
+    def fetch_document(
+        self,
+        company_id: str,
+        document_type: str,
+        output_file: Optional[str] = None,
+    ) -> bytes:
+        """
+        Fetch official PDF documents from the German Handelsregister.
+
+        :param company_id: Unique company entity ID returned by the search
+                           or fetch endpoints.
+        :param document_type: One of ``"shareholders_list"``,
+                              ``"articles_of_association"``, ``"AD"``,
+                              or ``"CD"``.
+        :param output_file: Optional path to save the PDF to. The PDF bytes are
+                            always returned in addition to being written.
+        :return: PDF content as bytes.
+        :raises HandelsregisterError: On request or response failure.
+        :raises ValueError: When parameters are missing or invalid.
+        """
+        if not company_id:
+            raise ValueError("Parameter 'company_id' is required.")
+        if not document_type:
+            raise ValueError("Parameter 'document_type' is required.")
+
+        valid_document_types = {
+            "shareholders_list",
+            "articles_of_association",
+            "AD",
+            "CD",
+        }
+        if document_type not in valid_document_types:
+            raise ValueError(
+                f"Invalid document_type '{document_type}'. "
+                f"Valid values are: {', '.join(sorted(valid_document_types))}"
+            )
+
+        logger.debug(
+            "Fetching document for company_id=%s, document_type=%s",
+            company_id, document_type,
+        )
+
+        params = {
+            "company_id": company_id,
+            "document_type": document_type,
+        }
+
+        response = self._request("fetch-document", params=params, expect_json=False)
+
+        content_type = response.headers.get("content-type", "")
+        if "application/pdf" not in content_type:
+            try:
+                error_data = response.json()
+                error_msg = error_data.get("error", "Unknown error")
+                raise HandelsregisterError(f"API error: {error_msg}")
+            except ValueError:
+                raise InvalidResponseError(
+                    f"Expected PDF response but got {content_type}"
+                )
+
+        pdf_content = response.content
+        if output_file:
+            with open(output_file, "wb") as f:
+                f.write(pdf_content)
+            logger.info("Document saved to %s", output_file)
+        return pdf_content
+
+    # -------------------------------------------------------------------
+    # Token management (Bearer tokens)
+    # -------------------------------------------------------------------
+
+    def create_token(
+        self,
+        token_name: str,
+        abilities: Optional[List[str]] = None,
+        expires_at: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """
+        Create a new API bearer token.
+
+        :param token_name: Human-readable label for the token.
+        :param abilities: List of abilities, e.g. ``["*"]``.
+        :param expires_at: Optional expiry timestamp
+                           (format ``"YYYY-MM-DD HH:MM:SS"``).
+        :return: Response payload including the new token value.
+        """
+        if not token_name:
+            raise ValueError("Parameter 'token_name' is required.")
+
+        body: Dict[str, Any] = {"token_name": token_name}
+        if abilities is not None:
+            body["abilities"] = abilities
+        if expires_at is not None:
+            body["expires_at"] = expires_at
+        return self._post("auth/tokens/create", json_body=body)
+
+    def list_tokens(self) -> Dict[str, Any]:
+        """List all API bearer tokens for the authenticated account."""
+        return self._request("auth/tokens", params={})
+
+    def revoke_token(self, token_id: Union[str, int]) -> Dict[str, Any]:
+        """Revoke a specific API bearer token by its ID."""
+        if not token_id and token_id != 0:
+            raise ValueError("Parameter 'token_id' is required.")
+        return self._delete(f"auth/tokens/{token_id}")
+
+    def revoke_all_tokens(self) -> Dict[str, Any]:
+        """Revoke all API bearer tokens for the authenticated account."""
+        return self._delete("auth/tokens")
+
+    # -------------------------------------------------------------------
+    # Bulk enrichment
+    # -------------------------------------------------------------------
 
     def enrich(
         self,
@@ -199,7 +540,7 @@ class Handelsregister:
              - Add or update items from the file.
           4. Only re-process items that appear in the file and have not been enriched.
           5. Take periodic snapshots to allow resuming.
-        
+
         :param file_path: Path to the input file.
         :param input_type: Type of input file ('json', 'csv' or 'xlsx').
         :param query_properties: Dict describing which fields are combined to form 'q'.
@@ -242,9 +583,6 @@ class Handelsregister:
             file_path, snapshot_dir
         )
 
-        # ------------------------------------------------
-        # 1. Load snapshot if available
-        # ------------------------------------------------
         snapshot_data = []
         if snapshot_path:
             latest_snapshot = self._get_latest_snapshot(snapshot_path, param_hash)
@@ -255,9 +593,6 @@ class Handelsregister:
             else:
                 logger.info("No existing snapshot found.")
 
-        # ------------------------------------------------
-        # 2. Load the current file
-        # ------------------------------------------------
         if input_type == "json":
             with open(file_path, "r", encoding="utf-8") as f:
                 file_data = json.load(f)
@@ -273,26 +608,18 @@ class Handelsregister:
 
         logger.debug("Loaded %d items from file '%s'.", len(file_data), file_path)
 
-        # ------------------------------------------------
-        # 3. Merge snapshot_data + file_data
-        # ------------------------------------------------
-        # We'll use a dictionary keyed by a "unique key" derived from query_properties.
         merged_data = self._merge_data(snapshot_data, file_data, query_properties)
 
         logger.debug("Merged dataset size: %d items (includes removed items from snapshots).", len(merged_data))
 
-        # ------------------------------------------------
-        # 4. Only re-process items that are both in the file and not yet enriched
-        # ------------------------------------------------
-        processed_so_far = 0  # number of items that won't need re-processing
+        processed_so_far = 0
         for item in merged_data:
             if item.get("_handelsregister_result") is not None:
                 processed_so_far += 1
 
         logger.debug("Already processed %d items (via snapshots).", processed_so_far)
 
-        # Prepare progress bar
-        total_file_items = sum(1 for x in merged_data if x["_in_file"])  # how many are in the new file
+        total_file_items = sum(1 for x in merged_data if x["_in_file"])
         already_done = sum(1 for x in merged_data if x["_in_file"] and x.get("_handelsregister_result") is not None)
 
         logger.info(
@@ -300,49 +627,36 @@ class Handelsregister:
             total_file_items - already_done, total_file_items, already_done
         )
 
-        current_step_count = 0  # track how many new items we've processed since last snapshot
+        current_step_count = 0
         with tqdm(total=total_file_items, initial=already_done, desc="Enriching data") as pbar:
             for item in merged_data:
-                # Only enrich if item is in the file and not enriched
                 if not item["_in_file"]:
-                    # It's an old item removed from the current file, keep but skip re-processing
                     continue
                 if "_handelsregister_result" in item and item["_handelsregister_result"] is not None:
-                    # Already enriched from snapshot
                     continue
 
-                # Build q parameter from query_properties
                 q_string = self._build_q_string(item, query_properties)
                 if not q_string:
                     logger.debug("Skipping item because q-string is empty: %s", item)
                     item["_handelsregister_result"] = None
                 else:
-                    # Call the API
                     logger.debug("Enriching new item with q=%s", q_string)
                     api_response = self.fetch_organization(q=q_string, **params)
                     item["_handelsregister_result"] = api_response
 
-                # Update progress
                 pbar.update(1)
                 current_step_count += 1
 
-                # Snapshot logic: create snapshot every 'snapshot_steps' new items processed
                 if snapshot_path and current_step_count % snapshot_steps == 0:
                     self._create_snapshot(
                         merged_data, snapshot_path, snapshots, param_hash
                     )
 
-        # ------------------------------------------------
-        # 5. Final snapshot after the loop, if requested
-        # ------------------------------------------------
         if snapshot_path:
             self._create_snapshot(merged_data, snapshot_path, snapshots, param_hash)
 
         logger.info("Enrichment process completed.")
 
-        # ------------------------------------------------
-        # 6. Write enriched output file
-        # ------------------------------------------------
         if not output_file:
             in_path = Path(file_path)
             suffix_map = {"json": ".json", "csv": ".csv", "xlsx": ".xlsx"}
@@ -396,110 +710,18 @@ class Handelsregister:
 
         return pd.DataFrame(enriched)
 
-    def fetch_document(
-        self,
-        company_id: str,
-        document_type: str,
-        output_file: Optional[str] = None,
-    ) -> bytes:
-        """
-        Fetch official PDF documents from the German Handelsregister.
-
-        :param company_id: The unique company entity ID from search results.
-        :param document_type: Type of document to fetch. Valid values:
-                              - "shareholders_list": Gesellschafterliste document
-                              - "AD": Current excerpts (Aktuelle Daten)
-                              - "CD": Historical excerpts (Chronologische Daten)
-        :param output_file: Optional path to save the PDF file. If not provided,
-                            returns the PDF content as bytes.
-        :return: PDF content as bytes (if output_file is not provided).
-        :raises HandelsregisterError: For any request or response failures.
-        :raises ValueError: For invalid parameters.
-        """
-        if not company_id:
-            raise ValueError("Parameter 'company_id' is required.")
-        
-        if not document_type:
-            raise ValueError("Parameter 'document_type' is required.")
-        
-        valid_document_types = {"shareholders_list", "AD", "CD"}
-        if document_type not in valid_document_types:
-            raise ValueError(
-                f"Invalid document_type '{document_type}'. "
-                f"Valid values are: {', '.join(valid_document_types)}"
-            )
-
-        logger.debug(
-            "Fetching document for company_id=%s, document_type=%s",
-            company_id, document_type
-        )
-
-        # Construct query parameters
-        params = {
-            "api_key": self.api_key,
-            "company_id": company_id,
-            "document_type": document_type
-        }
-
-        url = f"{self.base_url}/fetch-document"
-
-        # Rate limiting
-        if self.rate_limit > 0:
-            elapsed = time.time() - self._last_request_time
-            if elapsed < self.rate_limit:
-                time.sleep(self.rate_limit - elapsed)
-
-        # Up to 3 retries with exponential backoff
-        max_retries = 3
-        for attempt in range(max_retries):
-            try:
-                with httpx.Client(timeout=self.timeout) as client:
-                    logger.debug("Making GET request to %s with params=%s", url, params)
-                    response = client.get(url, headers=self.headers, params=params)
-                    response.raise_for_status()
-                    
-                    # Check if response is PDF
-                    content_type = response.headers.get("content-type", "")
-                    if "application/pdf" not in content_type:
-                        # If not PDF, it might be an error response
-                        try:
-                            error_data = response.json()
-                            error_msg = error_data.get("error", "Unknown error")
-                            raise HandelsregisterError(f"API error: {error_msg}")
-                        except ValueError:
-                            raise InvalidResponseError(
-                                f"Expected PDF response but got {content_type}"
-                            )
-                    
-                    pdf_content = response.content
-                    self._last_request_time = time.time()
-                    
-                    # Save to file if output_file is provided
-                    if output_file:
-                        with open(output_file, "wb") as f:
-                            f.write(pdf_content)
-                        logger.info("Document saved to %s", output_file)
-                        return pdf_content
-                    
-                    return pdf_content
-
-            except httpx.RequestError as exc:
-                logger.warning("Request error (attempt %d/%d): %s", attempt + 1, max_retries, exc)
-                time.sleep(2 ** attempt)
-                if attempt == max_retries - 1:
-                    raise HandelsregisterError(f"Error while requesting document: {exc}") from exc
-
-            except httpx.HTTPStatusError as exc:
-                logger.warning("HTTP status error (attempt %d/%d): %s", attempt + 1, max_retries, exc)
-                if exc.response.status_code == 401:
-                    raise AuthenticationError("Invalid API key or unauthorized access.") from exc
-                time.sleep(2 ** attempt)
-                if attempt == max_retries - 1:
-                    raise HandelsregisterError(f"HTTP error occurred: {exc}") from exc
-
     # -------------------------------------------------------------------
     # Helper Methods
     # -------------------------------------------------------------------
+
+    @staticmethod
+    def _stable(value: Any) -> Any:
+        """Return a stable, hashable representation of a param value."""
+        if isinstance(value, dict):
+            return tuple(sorted((k, Handelsregister._stable(v)) for k, v in value.items()))
+        if isinstance(value, list):
+            return tuple(Handelsregister._stable(v) for v in value)
+        return value
 
     def _format_flat_result(self, result: Any) -> str:
         """Create a short string summary from an API result."""
@@ -701,34 +923,19 @@ class Handelsregister:
           - Any items that were in the snapshot (even if removed from file).
           - Overwriting or adding items from the new file.
           - Retaining already-enriched data whenever possible.
-        
-        We identify items by a "key" built from query_properties.
-        If query_properties is empty, we treat all items as distinct, 
-        which can lead to duplicates unless the user manages IDs or fields.
-
-        Items get a boolean `_in_file` indicating if they are in the new file.
         """
-
-        # Build a dict keyed by item "signature"
         merged_dict = {}
 
-        # 1. Insert snapshot items
         for snap_item in snapshot_data:
             key = self._build_key(snap_item, query_properties)
             merged_dict[key] = snap_item
 
-        # 2. Incorporate file items
-        #    - If key already exists, update with new fields from file but keep _handelsregister_result if present
-        #    - If key doesn't exist, add it
-        #    - Mark items as "_in_file": True
         for file_item in file_data:
             key = self._build_key(file_item, query_properties)
             if key in merged_dict:
                 existing = merged_dict[key]
                 enriched_result = existing.get("_handelsregister_result")
-                # Overwrite with the new file item
                 merged_dict[key] = file_item
-                # Preserve the old result if it existed
                 if enriched_result is not None:
                     merged_dict[key]["_handelsregister_result"] = enriched_result
             else:
@@ -736,34 +943,25 @@ class Handelsregister:
 
             merged_dict[key]["_in_file"] = True
 
-        # 3. For any items leftover from the snapshot that aren't in the new file, keep them but mark _in_file=False
         for key, item in merged_dict.items():
             if "_in_file" not in item:
                 item["_in_file"] = False
 
-        # 4. Convert merged_dict back to a list in a stable order
-        #    The final list order will be:
-        #       - snapshot_data items (original order),
-        #       - plus any new items from file_data
-        #       - plus anything leftover not in either (unlikely in typical usage).
         final_list = []
         used_keys = set()
 
-        # Add items from the snapshot_data in original order if present in merged_dict
         for snap_item in snapshot_data:
             key = self._build_key(snap_item, query_properties)
             if key in merged_dict and key not in used_keys:
                 final_list.append(merged_dict[key])
                 used_keys.add(key)
 
-        # Then add new items from the file that weren't in snapshot_data
         for file_item in file_data:
             key = self._build_key(file_item, query_properties)
             if key in merged_dict and key not in used_keys:
                 final_list.append(merged_dict[key])
                 used_keys.add(key)
 
-        # Finally, if there are any leftover items in merged_dict not in snapshot_data or file_data, add them:
         for key, item in merged_dict.items():
             if key not in used_keys:
                 final_list.append(item)
@@ -772,16 +970,9 @@ class Handelsregister:
         return final_list
 
     def _build_key(self, item: dict, query_properties: Dict[str, str]) -> tuple:
-        """
-        Build a tuple key based on query_properties. 
-        If query_properties is empty, returns a placeholder key 
-        that effectively treats every item as distinct.
-        """
+        """Build a tuple key based on query_properties."""
         if not query_properties:
-            # No user-defined properties => treat each item as unique
-            # Could also look for a built-in 'id' field, etc.
             return id(item)
-        # If we have fields, build a tuple from those fields
         return tuple(item.get(field_name, "") for field_name in query_properties.values())
 
     def _params_hash(self, params: Dict[str, Any]) -> str:
@@ -815,7 +1006,6 @@ class Handelsregister:
         with open(snapshot_file, "w", encoding="utf-8") as f:
             json.dump(data, f, ensure_ascii=False, indent=2)
 
-        # Prune old snapshots if we exceed max_snapshots
         pattern = str(snapshot_path / f"snapshot_{param_hash}_*.json")
         existing_snapshots = sorted(glob(pattern))
         if len(existing_snapshots) > max_snapshots:

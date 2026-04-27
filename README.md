@@ -4,16 +4,22 @@
 [![Python Versions](https://img.shields.io/pypi/pyversions/handelsregister.svg)](https://pypi.org/project/handelsregister/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-A modern Python client for accessing the [Handelsregister.ai](https://handelsregister.ai) API. This SDK provides convenient access to German company registry data with comprehensive information about companies, their management, financial data, and more.
+A modern Python client for the [Handelsregister.ai](https://handelsregister.ai) API. Structured, reliable, and fast access to the German commercial register (Handelsregister): company master data, financials, management, shareholders, UBOs, person profiles, and official PDF documents.
 
 ## ✨ Features
 
-- 🔎 **Easy Search**: Find companies using name, location and more
-- 📊 **Financial Data**: Access balance sheets, financial KPIs and P&L statements
-- 👥 **Management Information**: Details on current and past management positions
-- 📃 **Company Details**: Comprehensive legal entity information
-- 📚 **Batch Processing**: Enrich large datasets with company data 
-- 🔄 **Resilient Design**: Built-in retries, error handling, and snapshot capabilities
+- 🔎 **Company lookup** — `fetch-organization` with configurable feature flags
+- 👤 **Person profiles** — `fetch-person` (Handelsregister roles + web data)
+- 🗂️ **Search** — paginated `search-organizations` with postal-code filter
+- 📊 **Financial data** — KPIs, balance sheet, P&L, full annual reports (MD/HTML)
+- 👥 **Management** — current and past related persons with roles
+- 🤝 **Shareholders, UBOs, shareholdings** — who owns the company, who the company owns
+- 📰 **News, publications, insolvency publications**
+- 🌐 **Website content** — structured Markdown, optimized for LLMs
+- 📄 **Document downloads** — Gesellschafterliste, Gesellschaftsvertrag, AD, CD
+- 🔐 **Auth** — `x-api-key` header or Bearer token, plus token management
+- 📚 **Batch enrichment** — resilient CSV/JSON/XLSX enrichment with snapshots
+- ⚡ **Live mode** — opt-in realtime lookups against the Handelsregister
 
 ## 📦 Installation
 
@@ -23,252 +29,383 @@ pip install handelsregister
 
 ## 🔑 Authentication
 
-You'll need an API key from [Handelsregister.ai](https://handelsregister.ai). You can pass it explicitly or set it as an environment variable:
+You can authenticate in two ways:
+
+**API key (recommended for server-to-server):**
 
 ```bash
 export HANDELSREGISTER_API_KEY=your_api_key_here
 ```
 
+```python
+from handelsregister import Handelsregister
+
+client = Handelsregister(api_key="your_api_key_here")
+```
+
+**Bearer token (fine-grained control, expiration):**
+
+```bash
+export HANDELSREGISTER_BEARER_TOKEN=your_token_here
+```
+
+```python
+client = Handelsregister(bearer_token="your_token_here")
+```
+
+When both are provided, the bearer token wins.
+
 ## 🚀 Quick Start
 
-### Basic Usage
+### Company lookup
 
 ```python
 from handelsregister import Handelsregister
 
-# Create client (API key from environment variable or pass explicitly)
-client = Handelsregister(api_key="your_api_key_here")
+client = Handelsregister()
 
-# Fetch company information
-company_data = client.fetch_organization(q="Konux GmbH München")
+result = client.fetch_organization(
+    q="KONUX GmbH München",
+    features=["related_persons", "financial_kpi", "shareholders"],
+    ai_search="on-default",          # optional: enable AI search
+    # realtime_mode="handelsregister-default",  # +10 credits for live data
+)
 
-# Access company data
-print(f"Company: {company_data['name']}")
-print(f"Registration: {company_data['registration']['register_number']}")
-print(f"Status: {company_data['status']}")
+print(result["name"], result["registration"]["register_number"])
 ```
 
-### Object-Oriented Interface
-
-For a more convenient, object-oriented access to company data:
+### Object-oriented `Company` interface
 
 ```python
 from handelsregister import Company
 
-# Create company object with desired features
 company = Company(
     "OroraTech GmbH München",
     features=[
-        "related_persons",         # Get management information
-        "financial_kpi",           # Get financial KPIs
-        "balance_sheet_accounts",  # Get balance sheet data
-    ]
+        "related_persons",
+        "financial_kpi",
+        "balance_sheet_accounts",
+        "shareholders",
+        "ubos",
+        "shareholdings",
+        "annual_financial_statements",
+        "news",
+    ],
 )
 
-# Access basic information
-print(f"Name: {company.name}")
-print(f"Registration: {company.registration_number}")
-print(f"Status: {'Active' if company.is_active else 'Inactive'}")
-print(f"Address: {company.formatted_address}")
+print(company.name, company.is_active)
+print(company.formatted_address)
 
-# Get management information
+# Management
 for person in company.current_related_persons:
-    print(f"Manager: {person['name']} - {person['role']['en']['long']}")
+    print(person["name"], "-", person["role"]["en"]["long"])
 
-# Get financial data for the most recent year
-years = company.financial_years
-if years:
-    recent_year = years[0]
-    revenue = company.get_financial_kpi_for_year(recent_year, "revenue")
-    employees = company.get_financial_kpi_for_year(recent_year, "employees")
-    print(f"Revenue ({recent_year}): {revenue}")
-    print(f"Employees ({recent_year}): {employees}")
+# Shareholders (who owns the company)
+for entry in company.shareholders.entries:
+    print(entry.display_name, entry.percentage)
+
+# Ultimate beneficial owners
+for ubo in company.ubos.resolved:
+    print(ubo.name, ubo.percentage)
+
+# Outbound shareholdings (what the company owns)
+for holding in company.shareholdings.current:
+    print(holding.organization_name, holding.percentage)
+
+# News
+for article in company.news:
+    print(article["publication_date"], article["title"])
+```
+
+### Person profiles
+
+The `/v1/fetch-person` endpoint merges Handelsregister records with public web data. `ai_search` is always on for this endpoint (the 15-credit base cost includes the AI enrichment). `organization_q` is required to disambiguate common names.
+
+```python
+from handelsregister import Person
+
+person = Person(
+    person_q="Max Mustermann",
+    organization_q="Beispielwerk Analytics GmbH",
+    features=["shareholdings"],  # +5 credits, only if data is returned
+)
+
+print(person.canonical_name, "-", person.home_city)
+print(person.bio)
+
+for role in person.handelsregister_roles:
+    print(role["name"], role["label"], role.get("start_date"), role.get("end_date"))
+
+for holding in person.shareholdings.current:
+    print(holding.organization_name, holding.percentage, holding.as_of)
+```
+
+### Search
+
+```python
+client = Handelsregister()
+
+page = client.search_organizations(
+    q="tech",
+    limit=10,
+    skip=0,
+    filters={"postal_code": "80992"},
+)
+
+print(page["total"])
+for item in page["results"]:
+    print(item["name"], item["registration"]["register_number"])
 ```
 
 ## 📄 Document Downloads
 
-The SDK supports downloading official PDF documents from the German Handelsregister:
-
 ```python
 from handelsregister import Handelsregister, Company
 
-# Using the client directly
 client = Handelsregister()
 
-# First, get the company's entity_id
-result = client.fetch_organization(q="Konux GmbH München")
+# Get the company's entity_id
+result = client.fetch_organization(q="KONUX GmbH München")
 entity_id = result["entity_id"]
 
-# Download shareholders list (Gesellschafterliste)
+# Download documents directly from the client
 client.fetch_document(
     company_id=entity_id,
-    document_type="shareholders_list",
-    output_file="konux_shareholders.pdf"
+    document_type="shareholders_list",       # Gesellschafterliste
+    output_file="konux_shareholders.pdf",
 )
 
-# Download current excerpts (Aktuelle Daten)
 client.fetch_document(
     company_id=entity_id,
-    document_type="AD",
-    output_file="konux_current.pdf"
+    document_type="articles_of_association", # Gesellschaftsvertrag / Satzung
+    output_file="konux_articles.pdf",
 )
 
-# Download historical excerpts (Chronologische Daten)
+client.fetch_document(
+    company_id=entity_id,
+    document_type="AD",                      # Aktueller Ausdruck
+    output_file="konux_current.pdf",
+)
+
 pdf_bytes = client.fetch_document(
     company_id=entity_id,
-    document_type="CD"  # Returns bytes if no output_file specified
+    document_type="CD",                      # Chronologischer Ausdruck
 )
 
-# Using the Company class (more convenient)
+# Or via the Company helper
 company = Company("OroraTech GmbH München")
-
-# Download documents directly
 company.fetch_document(
     document_type="shareholders_list",
-    output_file="ororatech_shareholders.pdf"
+    output_file="ororatech_shareholders.pdf",
 )
 ```
 
-### Available Document Types
+### Available document types
 
-| Document Type | Description |
-|--------------|-------------|
-| `shareholders_list` | Gesellschafterliste (list of shareholders) |
-| `AD` | Aktuelle Daten (current company data) |
-| `CD` | Chronologische Daten (historical/chronological data) |
+| Document Type              | Description                                        |
+|----------------------------|----------------------------------------------------|
+| `shareholders_list`        | Gesellschafterliste                                |
+| `articles_of_association`  | Gesellschaftsvertrag / Satzung / Statut            |
+| `AD`                       | Aktuelle Daten (current excerpt)                   |
+| `CD`                       | Chronologische Daten (historical excerpt)          |
 
-### CLI Document Download
+## 🔐 Bearer Token Management
 
-```bash
-# Download shareholders list for a company
-$ handelsregister document "Konux GmbH München" --type shareholders_list --output konux_shareholders.pdf
+If you prefer managing bearer tokens over sharing an API key:
 
-# Download current excerpts
-$ handelsregister document "OroraTech GmbH München" --type AD --output ororatech_current.pdf
+```python
+client = Handelsregister(api_key="your_api_key_here")
 
-# Download historical data
-$ handelsregister document "Isar Aerospace SE" --type CD --output isar_history.pdf
+# Create a new token
+created = client.create_token(
+    token_name="My Application",
+    abilities=["*"],
+    expires_at="2026-01-01 00:00:00",
+)
+print(created)
+
+# List / revoke
+tokens = client.list_tokens()
+client.revoke_token(token_id=42)
+client.revoke_all_tokens()
 ```
 
 ## 📊 Data Enrichment
 
-The SDK allows you to enrich datasets with company information:
+Enrich a CSV/JSON/XLSX file of companies with Handelsregister data. Intermediate snapshots let you resume long-running jobs.
 
 ```python
 from handelsregister import Handelsregister
-import json
 
-# Sample data in a JSON file
-data = [
-    {"company_name": "Konux GmbH", "city": "München"},
-    {"company_name": "OroraTech GmbH", "city": "München"},
-    {"company_name": "Isar Aerospace SE", "city": "Ottobrunn"}
-]
-
-# Save to a file
-with open("companies.json", "w") as f:
-    json.dump(data, f)
-
-# Create client
 client = Handelsregister()
 
-# Enrich the data
 client.enrich(
-    file_path="companies.json",
-    input_type="json",
+    file_path="companies.csv",
+    input_type="csv",
     query_properties={
-        "name": "company_name",    # Map field 'company_name' to query parameter 'name'
-        "location": "city"         # Map field 'city' to query parameter 'location'
+        "name": "company_name",   # map 'company_name' column to query
+        "location": "city",       # map 'city' column to query
     },
-    snapshot_dir="snapshots",      # Store intermediate results
+    snapshot_dir="snapshots",
     params={
-        "features": ["related_persons", "financial_kpi"],
-        "ai_search": "off"
-    }
+        "features": ["related_persons", "financial_kpi", "ubos"],
+        "ai_search": "on-default",
+    },
+    output_format="csv",
+)
+```
+
+There is also a DataFrame convenience:
+
+```python
+import pandas as pd
+from handelsregister import Handelsregister
+
+client = Handelsregister()
+df = pd.read_csv("companies.csv")
+enriched = client.enrich_dataframe(
+    df,
+    query_properties={"name": "company_name", "location": "city"},
+    params={"features": ["financial_kpi"]},
 )
 ```
 
 ## 🖥️ Command Line Interface
 
-You can also use a small CLI after installing the package.
-Use the `fetch` subcommand for a single company lookup and `enrich` to
-process a file of companies.
-
-By default the `fetch` command retrieves all available features and uses AI based search.
-If the optional `rich` dependency is installed, the CLI displays a colorful factsheet.
+Installing the package exposes the `handelsregister` CLI. If the optional `rich` dependency is installed, commands render colorful tables.
 
 ```bash
+# Company lookup (defaults: all standard features + AI search)
 $ handelsregister fetch "KONUX GmbH München"
-KONUX GmbH | Status: ACTIVE | Reg: München 210918 | Flößergasse 2, 81369 München, DEU
 
+# Raw JSON
 $ handelsregister fetch json "KONUX GmbH München"
-{
-  "name": "KONUX GmbH",
-  "registration": {"register_number": "210918"},
-  "status": "ACTIVE"
-}
 
+# Opt-in to realtime mode for live register data
+$ handelsregister fetch "KONUX GmbH München" --realtime-mode handelsregister-default
+
+# Person profile
+$ handelsregister person \
+    --person "Max Mustermann" \
+    --organization "Beispielwerk Analytics GmbH" \
+    --feature shareholdings
+
+# Search
+$ handelsregister search "tech" --postal-code 80992 --limit 20
+
+# Enrich a file
 $ handelsregister enrich companies.csv --input csv \
     --query-properties name=company_name location=city \
     --snapshot-dir snapshots \
     --feature related_persons --feature financial_kpi \
     --output-format csv
+
+# Download documents
+$ handelsregister document "KONUX GmbH München" \
+    --type shareholders_list --output konux_shareholders.pdf
+
+$ handelsregister document "KONUX GmbH München" \
+    --type articles_of_association --output konux_articles.pdf
 ```
 
-## 📋 Available Features
+## 📋 Available Features (`fetch-organization`)
 
-The API supports several feature flags that you can include in your requests:
+| Feature Flag                         | Description                                                   |
+|--------------------------------------|---------------------------------------------------------------|
+| `related_persons`                    | Current and past management                                   |
+| `financial_kpi`                      | Yearly revenue, net income, employees, …                      |
+| `balance_sheet_accounts`             | Hierarchical balance sheet data                               |
+| `profit_and_loss_account`            | Profit & loss statements                                      |
+| `annual_financial_statements`        | Full annual reports as Markdown                               |
+| `annual_financial_statements__html`  | Full annual reports as HTML                                   |
+| `publications`                       | Official Handelsregister publications                         |
+| `insolvency_publications`            | Insolvency court publications                                 |
+| `news`                               | News articles about the company                               |
+| `website_content`                    | Company website as structured Markdown (AI mode, 0 credits)   |
+| `shareholders` (beta)                | Shareholders with capital contribution and ratio              |
+| `ubos` (beta)                        | Ultimate beneficial owners (resolved / unresolved / coverage) |
+| `shareholdings` (beta)               | Outbound shareholdings (what the company owns in others)      |
 
-| Feature Flag | Description |
-|--------------|-------------|
-| `related_persons` | Management and executive information |
-| `financial_kpi` | Financial key performance indicators |
-| `balance_sheet_accounts` | Balance sheet data |
-| `profit_and_loss_account` | Profit and loss statement data |
-| `publications` | Official publications |
+`realtime_mode="handelsregister-default"` forces a live Handelsregister lookup (+10 credits), independent of the feature flags above.
 
-## 🔍 Company Properties
-
-The `Company` class provides convenient access to all company information:
+## 🔍 `Company` properties
 
 ```python
-# Basic information
+# Basic
 company.name
 company.entity_id
 company.status
 company.is_active
 company.purpose
 
-# Registration info
+# Registration
 company.registration_number
 company.registration_court
 company.registration_type
 company.registration_date
 
-# Contact and address
+# Contact & address
 company.address
 company.formatted_address
 company.coordinates
 company.website
 company.phone_number
+company.email
 
-# Financial data
+# Financial
 company.financial_kpi
 company.financial_years
 company.balance_sheet_accounts
 company.profit_and_loss_account
+company.annual_financial_statements
+company.annual_financial_statements_html
+company.get_financial_kpi_for_year(2023)
+company.get_balance_sheet_for_year(2023)
+company.get_profit_and_loss_for_year(2023)
+company.get_annual_financial_statement_for_year(2023)  # Markdown
+company.get_annual_financial_statement_for_year(2023, html=True)
 
-# Management
+# People & ownership
 company.current_related_persons
 company.past_related_persons
 company.get_related_persons_by_role("MANAGING_DIRECTOR")
+company.shareholders           # ShareholderInfo
+company.ubos                   # UBOInfo
+company.shareholdings          # ShareholdingsInfo
 
-# Method helpers
-company.get_financial_kpi_for_year(2022)
-company.get_balance_sheet_for_year(2022)
-company.get_profit_and_loss_for_year(2022)
+# News & publications
+company.publications
+company.insolvency_publications
+company.news
+company.website_content
+```
+
+## 👤 `Person` properties
+
+```python
+person.entity_id
+person.name
+person.canonical_name
+person.given_name
+person.family_name
+person.previous_names
+person.birth_date
+person.home_city
+person.bio
+person.expertise
+person.emails
+person.phones
+person.linkedin
+person.github
+
+person.handelsregister_roles
+person.current_handelsregister_roles
+person.get_handelsregister_roles_by_label("MANAGING_DIRECTOR")
+person.affiliations
+
+person.shareholdings           # PersonShareholdings (requires feature flag)
 ```
 
 ## 📜 License
 
-This SDK is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+MIT — see [LICENSE](LICENSE).

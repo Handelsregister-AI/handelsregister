@@ -12,6 +12,8 @@ DEFAULT_FEATURES = [
     "publications",
 ]
 
+DOCUMENT_TYPES = ["shareholders_list", "articles_of_association", "AD", "CD"]
+
 try:
     from rich.console import Console
     from rich.table import Table
@@ -149,6 +151,110 @@ def _display_result(client: Handelsregister, result: dict) -> None:
         print(summary)
 
 
+def _display_person(result: dict) -> None:
+    """Pretty-print a person profile."""
+    name = result.get("name") or result.get("name_parts", {}).get("canonical_name", "")
+    bio = result.get("bio") or ""
+    roles = result.get("handelsregister_roles", []) or []
+    affiliations = result.get("affiliations", []) or []
+
+    if RICH_AVAILABLE:
+        console = Console()
+        console.print(Panel(name, title="Person", expand=False, style="cyan"))
+
+        profile = Table(title="Profile", show_header=False)
+        if result.get("birth_date"):
+            profile.add_row("Born", str(result.get("birth_date")))
+        location = result.get("location", {}) or {}
+        home = location.get("home") or {}
+        if isinstance(home, dict) and home.get("city"):
+            profile.add_row("City", home.get("city"))
+        if result.get("expertise"):
+            profile.add_row("Expertise", ", ".join(result["expertise"]))
+        profiles_data = result.get("profiles", {}) or {}
+        for key in ("linkedin", "github"):
+            if profiles_data.get(key):
+                profile.add_row(key.title(), profiles_data[key])
+        if bio:
+            profile.add_row("Bio", bio)
+
+        role_table = Table(title="Handelsregister Roles")
+        role_table.add_column("Company")
+        role_table.add_column("Role")
+        role_table.add_column("Start")
+        role_table.add_column("End")
+        for r in roles:
+            role_label = (
+                (r.get("role") or {}).get("en")
+                or (r.get("role") or {}).get("de")
+                or r.get("label", "")
+            )
+            role_table.add_row(
+                r.get("name", ""),
+                str(role_label),
+                str(r.get("start_date") or ""),
+                str(r.get("end_date") or ""),
+            )
+
+        affiliation_table = Table(title="Affiliations")
+        affiliation_table.add_column("Organization")
+        affiliation_table.add_column("Relation")
+        for a in affiliations:
+            affiliation_table.add_row(
+                a.get("organization", ""),
+                a.get("relation", ""),
+            )
+
+        group_items = [profile]
+        if role_table.row_count:
+            group_items.append(role_table)
+        if affiliation_table.row_count:
+            group_items.append(affiliation_table)
+
+        console.print(Panel(Group(*group_items), title="Details", style="magenta"))
+        console.print("Data provided by [bold]handelsregister.ai[/bold]")
+    else:
+        print(name)
+        if bio:
+            print(bio)
+        for r in roles:
+            role_label = (
+                (r.get("role") or {}).get("en")
+                or (r.get("role") or {}).get("de")
+                or r.get("label", "")
+            )
+            print(f"- {r.get('name', '')}: {role_label}")
+
+
+def _display_search_results(result: dict) -> None:
+    """Pretty-print search results."""
+    results = result.get("results", []) or []
+    total = result.get("total")
+
+    if RICH_AVAILABLE:
+        console = Console()
+        table = Table(title=f"Search results ({len(results)} of {total})")
+        table.add_column("Name")
+        table.add_column("Registration")
+        table.add_column("City")
+        for item in results:
+            reg = item.get("registration", {}) or {}
+            reg_str = " ".join(
+                str(p) for p in (reg.get("court"), reg.get("register_type"), reg.get("register_number")) if p
+            )
+            addr = item.get("address", {}) or {}
+            table.add_row(
+                item.get("name", ""),
+                reg_str,
+                addr.get("city", ""),
+            )
+        console.print(table)
+    else:
+        for item in results:
+            print(f"- {item.get('name', '')}  [{item.get('entity_id', '')}]")
+        if total is not None:
+            print(f"Total: {total}")
+
 
 def main():
     parser = argparse.ArgumentParser(description="Handelsregister.ai CLI")
@@ -158,6 +264,46 @@ def main():
     fetch_parser.add_argument("query", nargs="+")
     fetch_parser.add_argument("--feature", dest="features", action="append")
     fetch_parser.add_argument("--ai-search", dest="ai_search")
+    fetch_parser.add_argument("--realtime-mode", dest="realtime_mode")
+
+    person_parser = subparsers.add_parser("person", help="Fetch a person profile")
+    person_parser.add_argument(
+        "--person", dest="person_q", required=True, help="Person name (min. 2 chars)"
+    )
+    person_parser.add_argument(
+        "--organization",
+        dest="organization_q",
+        required=True,
+        help="Organization context for disambiguation",
+    )
+    person_parser.add_argument(
+        "--feature",
+        dest="features",
+        action="append",
+        help="Additional features (currently: shareholdings)",
+    )
+    person_parser.add_argument(
+        "--json",
+        dest="output_json",
+        action="store_true",
+        help="Emit raw JSON instead of a formatted view",
+    )
+
+    search_parser = subparsers.add_parser("search", help="Search organizations")
+    search_parser.add_argument("query", nargs="+")
+    search_parser.add_argument("--skip", type=int, default=0)
+    search_parser.add_argument("--limit", type=int, default=10)
+    search_parser.add_argument(
+        "--postal-code",
+        dest="postal_code",
+        help="Filter by postal code",
+    )
+    search_parser.add_argument(
+        "--json",
+        dest="output_json",
+        action="store_true",
+        help="Emit raw JSON instead of a formatted view",
+    )
 
     enrich_parser = subparsers.add_parser("enrich", help="Enrich a data file")
     enrich_parser.add_argument("file_path")
@@ -177,17 +323,21 @@ def main():
     document_parser = subparsers.add_parser("document", help="Download company documents")
     document_parser.add_argument("query", nargs="+", help="Company search query")
     document_parser.add_argument(
-        "--type", 
-        dest="document_type", 
+        "--type",
+        dest="document_type",
         required=True,
-        choices=["shareholders_list", "AD", "CD"],
-        help="Document type: shareholders_list (Gesellschafterliste), AD (Aktuelle Daten), CD (Chronologische Daten)"
+        choices=DOCUMENT_TYPES,
+        help=(
+            "Document type: shareholders_list (Gesellschafterliste), "
+            "articles_of_association (Gesellschaftsvertrag/Satzung), "
+            "AD (Aktuelle Daten), CD (Chronologische Daten)"
+        ),
     )
     document_parser.add_argument(
-        "--output", 
-        dest="output_file", 
+        "--output",
+        dest="output_file",
         required=True,
-        help="Output PDF file path"
+        help="Output PDF file path",
     )
     document_parser.add_argument("--ai-search", dest="ai_search", default="off")
 
@@ -206,6 +356,7 @@ def main():
 
         features: Optional[List[str]] = args.features if args.features else DEFAULT_FEATURES
         ai_search: str = args.ai_search if args.ai_search else "on-default"
+        realtime_mode: Optional[str] = args.realtime_mode
 
         if RICH_AVAILABLE:
             console = Console()
@@ -214,6 +365,7 @@ def main():
                     q=query_string,
                     features=features,
                     ai_search=ai_search,
+                    realtime_mode=realtime_mode,
                 )
         else:
             print("Fetching data...", flush=True)
@@ -221,12 +373,62 @@ def main():
                 q=query_string,
                 features=features,
                 ai_search=ai_search,
+                realtime_mode=realtime_mode,
             )
 
         if output_json:
             print(json.dumps(result, indent=2, ensure_ascii=False))
         else:
             _display_result(client, result)
+    elif args.command == "person":
+        if RICH_AVAILABLE:
+            console = Console()
+            with console.status("[bold green]Fetching person..."):
+                result = client.fetch_person(
+                    person_q=args.person_q,
+                    organization_q=args.organization_q,
+                    features=args.features,
+                )
+        else:
+            print("Fetching person...", flush=True)
+            result = client.fetch_person(
+                person_q=args.person_q,
+                organization_q=args.organization_q,
+                features=args.features,
+            )
+
+        if args.output_json:
+            print(json.dumps(result, indent=2, ensure_ascii=False))
+        else:
+            _display_person(result)
+    elif args.command == "search":
+        query_string = " ".join(args.query)
+        filters = None
+        if args.postal_code:
+            filters = {"postal_code": args.postal_code}
+
+        if RICH_AVAILABLE:
+            console = Console()
+            with console.status("[bold green]Searching..."):
+                result = client.search_organizations(
+                    q=query_string,
+                    skip=args.skip,
+                    limit=args.limit,
+                    filters=filters,
+                )
+        else:
+            print("Searching...", flush=True)
+            result = client.search_organizations(
+                q=query_string,
+                skip=args.skip,
+                limit=args.limit,
+                filters=filters,
+            )
+
+        if args.output_json:
+            print(json.dumps(result, indent=2, ensure_ascii=False))
+        else:
+            _display_search_results(result)
     elif args.command == "enrich":
         query_props = parse_query_properties(args.query_properties)
         params = {}
@@ -245,7 +447,7 @@ def main():
         )
     elif args.command == "document":
         query_string = " ".join(args.query)
-        
+
         if RICH_AVAILABLE:
             console = Console()
             with console.status("[bold green]Fetching company data..."):
@@ -260,21 +462,21 @@ def main():
                 q=query_string,
                 ai_search=args.ai_search,
             )
-        
+
         company_name = result.get("name", "Unknown Company")
         entity_id = result.get("entity_id")
-        
+
         if not entity_id:
             if RICH_AVAILABLE:
                 console.print("[red]Error: Could not find entity_id for the company[/red]")
             else:
                 print("Error: Could not find entity_id for the company")
             return
-        
+
         if RICH_AVAILABLE:
             console.print(f"[green]Found company:[/green] {company_name}")
             console.print(f"[green]Entity ID:[/green] {entity_id}")
-            
+
             with console.status(f"[bold green]Downloading {args.document_type} document..."):
                 client.fetch_document(
                     company_id=entity_id,

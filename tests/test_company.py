@@ -48,18 +48,32 @@ class TestCompanyInitialization:
         mock_client.fetch_organization.assert_called_once_with(
             q="KONUX GmbH",
             features=features,
-            ai_search="off"
+            ai_search="off",
+            realtime_mode=None,
         )
-    
+
     def test_init_with_ai_search(self, mock_client):
         """Test initialization with ai_search parameter."""
         company = Company("KONUX GmbH", client=mock_client, ai_search="on")
         mock_client.fetch_organization.assert_called_once_with(
-            q="KONUX GmbH", 
-            features=[], 
-            ai_search="on"
+            q="KONUX GmbH",
+            features=[],
+            ai_search="on",
+            realtime_mode=None,
         )
-    
+
+    def test_init_with_realtime_mode(self, mock_client):
+        """Realtime mode is forwarded to fetch_organization."""
+        company = Company(
+            "KONUX GmbH", client=mock_client, realtime_mode="handelsregister-default"
+        )
+        mock_client.fetch_organization.assert_called_once_with(
+            q="KONUX GmbH",
+            features=[],
+            ai_search="off",
+            realtime_mode="handelsregister-default",
+        )
+
     def test_init_with_kwargs(self, mock_client):
         """Test initialization with additional kwargs."""
         company = Company("KONUX GmbH", client=mock_client, some_param="value")
@@ -67,6 +81,7 @@ class TestCompanyInitialization:
             q="KONUX GmbH",
             features=[],
             ai_search="off",
+            realtime_mode=None,
             some_param="value"
         )
     
@@ -304,6 +319,83 @@ class TestCompanyShareholderProperties:
         assert entry.contribution_currency == "EUR"
         assert entry.percentage == 0.25
         assert entry.address == "München"
+
+
+class TestCompanyUBOsAndShareholdings:
+    """Tests for the new UBO and shareholdings helpers on Company."""
+
+    def test_ubos_empty(self, company):
+        ubos = company.ubos
+        assert bool(ubos) is False
+        assert ubos.resolved == []
+        assert ubos.unresolved == []
+
+    def test_ubos_populated(self, company):
+        company._data["ubos"] = {
+            "resolved": [
+                {"name": "Max Mustermann", "percentage": 45.5, "type": "natural_person"}
+            ],
+            "unresolved": [
+                {"name": "Holding Inc.", "percentage": 10.0}
+            ],
+            "coverage": 0.9,
+        }
+        ubos = company.ubos
+        assert bool(ubos) is True
+        assert len(ubos.resolved) == 1
+        assert ubos.resolved[0].name == "Max Mustermann"
+        assert ubos.resolved[0].percentage == 45.5
+        assert ubos.coverage == 0.9
+        assert len(ubos.all) == 2
+
+    def test_shareholdings_empty(self, company):
+        holdings = company.shareholdings
+        assert bool(holdings) is False
+
+    def test_shareholdings_populated(self, company):
+        company._data["shareholdings"] = {
+            "holdings": {
+                "current": [
+                    {
+                        "organization": {"entity_id": "x1", "name": "Sub GmbH"},
+                        "ownership": {
+                            "percentage": 100.0,
+                            "contribution": {"amount": 25000, "currency": "EUR"},
+                        },
+                        "as_of": "2025-01-01",
+                    }
+                ]
+            },
+            "summary": {"total_current": 1},
+        }
+        holdings = company.shareholdings
+        assert bool(holdings) is True
+        assert len(holdings.current) == 1
+        entry = holdings.current[0]
+        assert entry.organization_name == "Sub GmbH"
+        assert entry.percentage == 100.0
+        assert entry.contribution_amount == 25000
+        assert entry.contribution_currency == "EUR"
+        assert entry.as_of == "2025-01-01"
+
+    def test_annual_financial_statements(self, company):
+        assert company.annual_financial_statements == []
+        company._data["annual_financial_statements"] = [
+            {"year": 2023, "content": "# Report"}
+        ]
+        assert company.get_annual_financial_statement_for_year(2023)["year"] == 2023
+        assert company.get_annual_financial_statement_for_year(1999) == {}
+
+    def test_news_insolvency_website(self, company):
+        assert company.news == []
+        assert company.insolvency_publications == []
+        assert company.website_content is None
+        company._data["news"] = [{"title": "X"}]
+        company._data["insolvency_publications"] = [{"case": "IN 1/24"}]
+        company._data["website_content"] = "# About"
+        assert company.news[0]["title"] == "X"
+        assert company.insolvency_publications[0]["case"] == "IN 1/24"
+        assert company.website_content == "# About"
 
 
 class TestCompanyFinancialProperties:

@@ -185,9 +185,11 @@ def test_full_client_workflow(mock_httpx_client, api_key, sample_organization_re
     # Verify parameters were passed correctly
     args, kwargs = mock_session.get.call_args
     assert kwargs["params"]["q"] == "OroraTech GmbH München"
-    assert kwargs["params"]["feature"] == ["related_persons", "publications"]
+    assert list(kwargs["params"]["feature"]) == ["related_persons", "publications"]
     assert kwargs["params"]["ai_search"] == "on-default"
-    assert kwargs["params"]["api_key"] == api_key
+    # Auth now flows through the x-api-key header, not the query string.
+    assert "api_key" not in kwargs["params"]
+    assert kwargs["headers"]["x-api-key"] == api_key
 
 
 @pytest.mark.live_api

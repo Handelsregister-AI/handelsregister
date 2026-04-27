@@ -12,6 +12,121 @@ T = TypeVar('T')
 
 
 @dataclass
+class UBOEntry:
+    """A single ultimate beneficial owner entry."""
+    raw: Dict[str, Any] = field(default_factory=dict)
+
+    @property
+    def name(self) -> str:
+        return self.raw.get("name") or self.raw.get("display_name") or ""
+
+    @property
+    def percentage(self) -> Optional[float]:
+        """Ownership percentage as returned by the API (0-100)."""
+        value = self.raw.get("percentage")
+        if value is None:
+            value = self.raw.get("ownership_percentage")
+        if value is None:
+            ownership = self.raw.get("ownership") or {}
+            if isinstance(ownership, dict):
+                value = ownership.get("percentage")
+        return value
+
+    @property
+    def type(self) -> str:
+        return self.raw.get("type", "")
+
+    @property
+    def resolved(self) -> Optional[bool]:
+        return self.raw.get("resolved")
+
+
+@dataclass
+class UBOInfo:
+    """
+    Structured ultimate beneficial owners block.
+
+    Mirrors the ``ubos`` feature response, which typically contains resolved
+    and unresolved owners plus coverage metadata.
+    """
+    resolved: List[UBOEntry] = field(default_factory=list)
+    unresolved: List[UBOEntry] = field(default_factory=list)
+    coverage: Optional[float] = None
+    raw: Dict[str, Any] = field(default_factory=dict)
+
+    def __bool__(self) -> bool:
+        return bool(self.resolved or self.unresolved)
+
+    @property
+    def all(self) -> List[UBOEntry]:
+        return self.resolved + self.unresolved
+
+    def as_dict(self) -> Dict[str, Any]:
+        return self.raw
+
+
+@dataclass
+class ShareholdingEntry:
+    """A single shareholding (investment) that the company holds in another entity."""
+    raw: Dict[str, Any] = field(default_factory=dict)
+
+    @property
+    def organization(self) -> Dict[str, Any]:
+        value = self.raw.get("organization") or {}
+        return value if isinstance(value, dict) else {}
+
+    @property
+    def organization_name(self) -> str:
+        return self.organization.get("name", "")
+
+    @property
+    def organization_entity_id(self) -> str:
+        return self.organization.get("entity_id", "")
+
+    @property
+    def ownership(self) -> Dict[str, Any]:
+        value = self.raw.get("ownership") or {}
+        return value if isinstance(value, dict) else {}
+
+    @property
+    def percentage(self) -> Optional[float]:
+        return self.ownership.get("percentage")
+
+    @property
+    def contribution_amount(self) -> Optional[Union[int, float]]:
+        contribution = self.ownership.get("contribution") or {}
+        return contribution.get("amount") if isinstance(contribution, dict) else None
+
+    @property
+    def contribution_currency(self) -> str:
+        contribution = self.ownership.get("contribution") or {}
+        return contribution.get("currency", "") if isinstance(contribution, dict) else ""
+
+    @property
+    def as_of(self) -> Optional[str]:
+        return self.raw.get("as_of")
+
+
+@dataclass
+class ShareholdingsInfo:
+    """Container for a company's outbound shareholdings."""
+    current: List[ShareholdingEntry] = field(default_factory=list)
+    past: List[ShareholdingEntry] = field(default_factory=list)
+    summary: Dict[str, Any] = field(default_factory=dict)
+    raw: Dict[str, Any] = field(default_factory=dict)
+
+    def __bool__(self) -> bool:
+        return bool(self.current or self.past)
+
+    @property
+    def all(self) -> List[ShareholdingEntry]:
+        return self.current + self.past
+
+    def as_dict(self) -> Dict[str, Any]:
+        return self.raw
+
+
+@dataclass
 class ShareholderEntry:
     """
     Structured representation of a single shareholder entry returned by the API.
@@ -115,16 +230,17 @@ class Company:
     """
     
     def __init__(
-        self, 
-        query: str, 
+        self,
+        query: str,
         client: Optional[Handelsregister] = None,
         features: Optional[List[str]] = None,
         ai_search: Optional[str] = "off",  # Changed from "on-default" to "off"
+        realtime_mode: Optional[str] = None,
         **kwargs
     ):
         """
         Initialize a Company instance by fetching data from Handelsregister.ai.
-        
+
         :param query: A search query for the company (e.g. "OroraTech GmbH aus München").
         :param client: An optional Handelsregister client instance. If None, a new client is created.
         :param features: A list of desired feature flags to include in the request.
@@ -134,8 +250,17 @@ class Company:
                          - "financial_kpi"
                          - "balance_sheet_accounts"
                          - "profit_and_loss_account"
+                         - "annual_financial_statements"
+                         - "annual_financial_statements__html"
+                         - "insolvency_publications"
+                         - "news"
+                         - "website_content"
                          - "shareholders"
+                         - "ubos"
+                         - "shareholdings"
         :param ai_search: Whether to use AI-based search, defaults to "off".
+        :param realtime_mode: Pass ``"handelsregister-default"`` to force a live
+                              Handelsregister lookup (+10 credits).
         :param kwargs: Additional parameters to pass to fetch_organization.
         :raises HandelsregisterError: If there was an error fetching the company data.
         """
@@ -143,14 +268,15 @@ class Company:
         self._client = client or Handelsregister()
         self._features = features or []
         self._ai_search = ai_search
-        
+        self._realtime_mode = realtime_mode
+
         # Fetch company data
         self._data = self._fetch_company_data(query, **kwargs)
-        
+
     def _fetch_company_data(self, query: str, **kwargs) -> Dict[str, Any]:
         """
         Fetch company data from the Handelsregister.ai API.
-        
+
         :param query: The search query for the company.
         :param kwargs: Additional parameters to pass to fetch_organization.
         :return: The company data as a dictionary.
@@ -158,9 +284,10 @@ class Company:
         """
         try:
             return self._client.fetch_organization(
-                q=query, 
+                q=query,
                 features=self._features,
                 ai_search=self._ai_search,
+                realtime_mode=self._realtime_mode,
                 **kwargs
             )
         except HandelsregisterError as e:
@@ -422,7 +549,123 @@ class Company:
             )
         total_capital = data.get("total_capital")
         return ShareholderInfo(entries=entries, total_capital=total_capital, raw=data)
-    
+
+    # --------------------------------
+    # Ultimate beneficial owners (UBOs)
+    # --------------------------------
+
+    @property
+    def ubos(self) -> UBOInfo:
+        """Return structured ultimate beneficial owner (UBO) information."""
+        data = self._data.get("ubos")
+        if not isinstance(data, dict):
+            return UBOInfo(raw={})
+
+        resolved_raw = (
+            data.get("resolved")
+            or data.get("owners")
+            or data.get("beneficial_owners")
+            or []
+        )
+        unresolved_raw = (
+            data.get("unresolved")
+            or data.get("unresolved_beneficial_owners")
+            or []
+        )
+
+        resolved = [UBOEntry(raw=entry) for entry in resolved_raw if isinstance(entry, dict)]
+        unresolved = [UBOEntry(raw=entry) for entry in unresolved_raw if isinstance(entry, dict)]
+
+        coverage = data.get("coverage")
+        if coverage is None and isinstance(data.get("summary"), dict):
+            coverage = data["summary"].get("coverage")
+
+        return UBOInfo(
+            resolved=resolved,
+            unresolved=unresolved,
+            coverage=coverage,
+            raw=data,
+        )
+
+    # --------------------------------
+    # Outbound shareholdings
+    # --------------------------------
+
+    @property
+    def shareholdings(self) -> ShareholdingsInfo:
+        """Return the company's own shareholdings in other organizations."""
+        data = self._data.get("shareholdings") or {}
+        holdings = data.get("holdings") if isinstance(data.get("holdings"), dict) else data
+
+        current_raw = []
+        past_raw = []
+        if isinstance(holdings, dict):
+            current_raw = holdings.get("current", []) or []
+            past_raw = holdings.get("past", []) or []
+
+        current = [ShareholdingEntry(raw=entry) for entry in current_raw if isinstance(entry, dict)]
+        past = [ShareholdingEntry(raw=entry) for entry in past_raw if isinstance(entry, dict)]
+
+        summary = data.get("summary") if isinstance(data.get("summary"), dict) else {}
+        return ShareholdingsInfo(
+            current=current,
+            past=past,
+            summary=summary,
+            raw=data if isinstance(data, dict) else {},
+        )
+
+    # --------------------------------
+    # Annual financial statements
+    # --------------------------------
+
+    @property
+    def annual_financial_statements(self) -> List[Dict[str, Any]]:
+        """Return full annual reports (Markdown) with metadata."""
+        value = self._data.get("annual_financial_statements") or []
+        return list(value) if isinstance(value, list) else []
+
+    @property
+    def annual_financial_statements_html(self) -> List[Dict[str, Any]]:
+        """Return full annual reports (HTML) with metadata."""
+        value = self._data.get("annual_financial_statements__html") or []
+        return list(value) if isinstance(value, list) else []
+
+    def get_annual_financial_statement_for_year(
+        self, year: int, html: bool = False
+    ) -> Dict[str, Any]:
+        """
+        Return an annual financial statement for the given year.
+
+        :param year: Report year.
+        :param html: When True, return the HTML variant instead of Markdown.
+        """
+        statements = self.annual_financial_statements_html if html else self.annual_financial_statements
+        for item in statements:
+            if item.get("year") == year:
+                return item
+        return {}
+
+    # --------------------------------
+    # Insolvency, news, website
+    # --------------------------------
+
+    @property
+    def insolvency_publications(self) -> List[Dict[str, Any]]:
+        """Insolvency court publications."""
+        value = self._data.get("insolvency_publications") or []
+        return list(value) if isinstance(value, list) else []
+
+    @property
+    def news(self) -> List[Dict[str, Any]]:
+        """News articles about the company."""
+        value = self._data.get("news") or []
+        return list(value) if isinstance(value, list) else []
+
+    @property
+    def website_content(self) -> Any:
+        """Company website content as structured Markdown (AI mode)."""
+        return self._data.get("website_content")
+
     # --------------------------------
     # Financial information
     # --------------------------------
