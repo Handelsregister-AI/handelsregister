@@ -1,4 +1,3 @@
-import os
 import re
 from pathlib import Path
 
@@ -46,7 +45,7 @@ setuptools.setup(
     packages=setuptools.find_packages(exclude=("tests", "tests.*")),
     include_package_data=True,
 
-    python_requires=">=3.7",
+    python_requires=">=3.8",
     install_requires=[
         "httpx>=0.23.0",
         "tqdm>=4.0.0",
@@ -69,6 +68,9 @@ setuptools.setup(
         "Programming Language :: Python :: 3.8",
         "Programming Language :: Python :: 3.9",
         "Programming Language :: Python :: 3.10",
+        "Programming Language :: Python :: 3.11",
+        "Programming Language :: Python :: 3.12",
+        "Programming Language :: Python :: 3.13",
         "Programming Language :: Python :: 3 :: Only",
     ],
 )

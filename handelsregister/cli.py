@@ -3,6 +3,7 @@ import json
 from typing import List, Optional, Any
 
 from .client import Handelsregister
+from .constants import DOCUMENT_TYPES, ORGANIZATION_FEATURES
 
 DEFAULT_FEATURES = [
     "related_persons",
@@ -11,8 +12,6 @@ DEFAULT_FEATURES = [
     "profit_and_loss_account",
     "publications",
 ]
-
-DOCUMENT_TYPES = ["shareholders_list", "articles_of_association", "AD", "CD"]
 
 try:
     from rich.console import Console
@@ -50,6 +49,14 @@ def _display_result(client: Handelsregister, result: dict) -> None:
             profile.add_row("Legal Form", str(result.get("legal_form")))
         if result.get("purpose"):
             profile.add_row("Purpose", str(result.get("purpose")))
+        representation = result.get("representation_scheme") or {}
+        active_representation = (
+            representation.get("current")
+            or representation.get("latest")
+            or []
+        )
+        if active_representation:
+            profile.add_row("Representation", "\n".join(active_representation))
         addr = result.get("address", {})
         addr_parts = [addr.get("street"), f"{addr.get('postal_code', '')} {addr.get('city', '')}".strip(), addr.get("country_code")]
         addr_str = ", ".join(filter(None, addr_parts)).strip()
@@ -144,6 +151,20 @@ def _display_result(client: Handelsregister, result: dict) -> None:
             group_items.append(management_table)
         if financial_table and financial_table.row_count:
             group_items.append(financial_table)
+
+        ma_data = result.get("mergers_and_acquisitions") or {}
+        ma_summary = ma_data.get("summary") if isinstance(ma_data, dict) else {}
+        if isinstance(ma_summary, dict) and ma_summary:
+            ma_table = Table(title="Mergers & Acquisitions", show_header=False)
+            ma_table.add_row(
+                "Transactions",
+                str(ma_summary.get("total_transactions", 0)),
+            )
+            if ma_summary.get("first_date"):
+                ma_table.add_row("First", str(ma_summary["first_date"]))
+            if ma_summary.get("last_date"):
+                ma_table.add_row("Last", str(ma_summary["last_date"]))
+            group_items.append(ma_table)
 
         console.print(Panel(Group(*group_items), title="Details", style="magenta"))
         console.print("Data provided by [bold]handelsregister.ai[/bold]")
@@ -262,7 +283,13 @@ def main():
 
     fetch_parser = subparsers.add_parser("fetch", help="Fetch a company")
     fetch_parser.add_argument("query", nargs="+")
-    fetch_parser.add_argument("--feature", dest="features", action="append")
+    fetch_parser.add_argument(
+        "--feature",
+        dest="features",
+        action="append",
+        help="Organization feature; repeat as needed. Supported: "
+        + ", ".join(ORGANIZATION_FEATURES),
+    )
     fetch_parser.add_argument("--ai-search", dest="ai_search")
     fetch_parser.add_argument("--realtime-mode", dest="realtime_mode")
 
@@ -290,13 +317,30 @@ def main():
     )
 
     search_parser = subparsers.add_parser("search", help="Search organizations")
-    search_parser.add_argument("query", nargs="+")
+    search_parser.add_argument("query", nargs="*")
     search_parser.add_argument("--skip", type=int, default=0)
     search_parser.add_argument("--limit", type=int, default=10)
     search_parser.add_argument(
         "--postal-code",
         dest="postal_code",
         help="Filter by postal code",
+    )
+    search_parser.add_argument(
+        "--filters",
+        dest="filters_json",
+        help="Complete search filter object as JSON",
+    )
+    search_parser.add_argument(
+        "--filter",
+        dest="filter_items",
+        action="append",
+        default=[],
+        help="One filter as key=value; values may be JSON. Repeat as needed.",
+    )
+    search_parser.add_argument(
+        "--ai-mode",
+        dest="ai_mode",
+        help="AI-assisted search mode (on-default)",
     )
     search_parser.add_argument(
         "--json",
@@ -330,14 +374,15 @@ def main():
         help=(
             "Document type: shareholders_list (Gesellschafterliste), "
             "articles_of_association (Gesellschaftsvertrag/Satzung), "
-            "AD (Aktuelle Daten), CD (Chronologische Daten)"
+            "AD (Aktuelle Daten), CD (Chronologische Daten), "
+            "SI (Strukturierte Informationen/XML)"
         ),
     )
     document_parser.add_argument(
         "--output",
         dest="output_file",
         required=True,
-        help="Output PDF file path",
+        help="Output document path (.pdf, or .xml for SI)",
     )
     document_parser.add_argument("--ai-search", dest="ai_search", default="off")
 
@@ -402,10 +447,31 @@ def main():
         else:
             _display_person(result)
     elif args.command == "search":
-        query_string = " ".join(args.query)
-        filters = None
+        query_string = " ".join(args.query).strip() or None
+        filters = {}
+        if args.filters_json:
+            try:
+                parsed_filters = json.loads(args.filters_json)
+            except json.JSONDecodeError as exc:
+                search_parser.error(f"--filters must be valid JSON: {exc}")
+            if not isinstance(parsed_filters, dict):
+                search_parser.error("--filters must decode to a JSON object")
+            filters.update(parsed_filters)
+        for item in args.filter_items:
+            if "=" not in item:
+                search_parser.error("--filter values must use key=value")
+            key, raw_value = item.split("=", 1)
+            key = key.strip()
+            if not key:
+                search_parser.error("--filter key must not be empty")
+            try:
+                value = json.loads(raw_value)
+            except json.JSONDecodeError:
+                value = raw_value
+            filters[key] = value
         if args.postal_code:
-            filters = {"postal_code": args.postal_code}
+            filters["postal_code"] = args.postal_code
+        filters = filters or None
 
         if RICH_AVAILABLE:
             console = Console()
@@ -415,6 +481,7 @@ def main():
                     skip=args.skip,
                     limit=args.limit,
                     filters=filters,
+                    ai_mode=args.ai_mode,
                 )
         else:
             print("Searching...", flush=True)
@@ -423,6 +490,7 @@ def main():
                 skip=args.skip,
                 limit=args.limit,
                 filters=filters,
+                ai_mode=args.ai_mode,
             )
 
         if args.output_json:

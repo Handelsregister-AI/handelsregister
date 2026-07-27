@@ -1,10 +1,14 @@
 import logging
 from dataclasses import dataclass, field
-from typing import Dict, Any, Optional, List, Union, Tuple, TypeVar, Generic, Callable
-from datetime import datetime
+from typing import Dict, Any, Optional, List, Union, Tuple, TypeVar
 
 from .client import Handelsregister
 from .exceptions import HandelsregisterError
+from .models import (
+    MergersAndAcquisitions,
+    RelatedPersons,
+    RepresentationScheme,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -15,10 +19,31 @@ T = TypeVar('T')
 class UBOEntry:
     """A single ultimate beneficial owner entry."""
     raw: Dict[str, Any] = field(default_factory=dict)
+    resolved_hint: Optional[bool] = None
 
     @property
     def name(self) -> str:
-        return self.raw.get("name") or self.raw.get("display_name") or ""
+        person = self.person
+        return (
+            self.raw.get("name")
+            or self.raw.get("display_name")
+            or person.get("name")
+            or person.get("name_parts", {}).get("canonical_name")
+            or ""
+        )
+
+    @property
+    def person(self) -> Dict[str, Any]:
+        value = self.raw.get("person") or {}
+        return value if isinstance(value, dict) else {}
+
+    @property
+    def entity_id(self) -> str:
+        return self.raw.get("entity_id") or self.person.get("entity_id") or ""
+
+    @property
+    def birth_date(self) -> Optional[str]:
+        return self.raw.get("birth_date") or self.person.get("birth_date")
 
     @property
     def percentage(self) -> Optional[float]:
@@ -34,11 +59,26 @@ class UBOEntry:
 
     @property
     def type(self) -> str:
-        return self.raw.get("type", "")
+        return self.raw.get("type") or ("natural_person" if self.person else "")
 
     @property
     def resolved(self) -> Optional[bool]:
-        return self.raw.get("resolved")
+        value = self.raw.get("resolved")
+        return value if value is not None else self.resolved_hint
+
+    @property
+    def paths(self) -> List[Dict[str, Any]]:
+        value = self.raw.get("paths") or []
+        return [item for item in value if isinstance(item, dict)] if isinstance(value, list) else []
+
+    @property
+    def reason(self) -> str:
+        return self.raw.get("reason", "")
+
+    @property
+    def registration(self) -> Dict[str, Any]:
+        value = self.raw.get("registration") or {}
+        return value if isinstance(value, dict) else {}
 
 
 @dataclass
@@ -178,6 +218,8 @@ class ShareholderInfo:
     """
     entries: List[ShareholderEntry] = field(default_factory=list)
     total_capital: Optional[Dict[str, Any]] = None
+    current_as_of: Optional[str] = None
+    history: List["ShareholderHistorySnapshot"] = field(default_factory=list)
     raw: Dict[str, Any] = field(default_factory=dict)
     
     def __bool__(self) -> bool:
@@ -199,6 +241,19 @@ class ShareholderInfo:
     
     def as_dict(self) -> Dict[str, Any]:
         """Expose the original API payload."""
+        return self.raw
+
+
+@dataclass
+class ShareholderHistorySnapshot:
+    """One historical shareholders list and its effective date."""
+
+    as_of: Optional[str] = None
+    entries: List[ShareholderEntry] = field(default_factory=list)
+    total_capital: Optional[Dict[str, Any]] = None
+    raw: Dict[str, Any] = field(default_factory=dict)
+
+    def as_dict(self) -> Dict[str, Any]:
         return self.raw
 
 
@@ -258,6 +313,7 @@ class Company:
                          - "shareholders"
                          - "ubos"
                          - "shareholdings"
+                         - "mergers_and_acquisitions"
         :param ai_search: Whether to use AI-based search, defaults to "off".
         :param realtime_mode: Pass ``"handelsregister-default"`` to force a live
                               Handelsregister lookup (+10 credits).
@@ -480,6 +536,17 @@ class Company:
         if isinstance(ic, dict):
             return ic.get("WZ2008", [])
         return self._data.get("wz2008_codes", [])
+
+    # --------------------------------
+    # Representation scheme
+    # --------------------------------
+
+    @property
+    def representation_scheme(self) -> RepresentationScheme:
+        """Current and historical organization-level representation rules."""
+        return RepresentationScheme.from_payload(
+            self._data.get("representation_scheme")
+        )
     
     # --------------------------------
     # Related persons (management, etc.)
@@ -489,6 +556,16 @@ class Company:
     def related_persons(self) -> Dict[str, List[Dict[str, Any]]]:
         """Get the related persons dictionary with 'current' and 'past' keys."""
         return self._data.get("related_persons", {"current": [], "past": []})
+
+    @property
+    def related_person_entries(self) -> RelatedPersons:
+        """
+        Typed related-person entries, including organization- and role-level
+        representation schemes.
+
+        ``related_persons`` remains the backwards-compatible raw dictionary.
+        """
+        return RelatedPersons.from_payload(self.related_persons)
     
     @property
     def current_related_persons(self) -> List[Dict[str, Any]]:
@@ -535,20 +612,66 @@ class Company:
     def shareholders(self) -> ShareholderInfo:
         """Get shareholder information with structured helper objects."""
         data = self._data.get("shareholders") or {}
+        entries = self._build_shareholder_entries(data.get("entries"))
+        total_capital = data.get("total_capital")
+        history_data = data.get("history") if isinstance(data.get("history"), dict) else {}
+        history: List[ShareholderHistorySnapshot] = []
+        for snapshot in history_data.get("past", []) or []:
+            if not isinstance(snapshot, dict):
+                continue
+            snapshot_data = (
+                snapshot.get("data")
+                if isinstance(snapshot.get("data"), dict)
+                else {}
+            )
+            history.append(
+                ShareholderHistorySnapshot(
+                    as_of=snapshot.get("as_of"),
+                    entries=self._build_shareholder_entries(
+                        snapshot_data.get("shareholders")
+                        or snapshot_data.get("entries")
+                    ),
+                    total_capital=(
+                        snapshot_data.get("total_capital")
+                        if isinstance(snapshot_data.get("total_capital"), dict)
+                        else None
+                    ),
+                    raw=snapshot,
+                )
+            )
+        return ShareholderInfo(
+            entries=entries,
+            total_capital=total_capital,
+            current_as_of=history_data.get("current_as_of"),
+            history=history,
+            raw=data,
+        )
+
+    @staticmethod
+    def _build_shareholder_entries(value: Any) -> List[ShareholderEntry]:
         entries: List[ShareholderEntry] = []
-        for entry in data.get("entries", []):
+        if not isinstance(value, list):
+            return entries
+        for entry in value:
             if not isinstance(entry, dict):
                 continue
             entries.append(
                 ShareholderEntry(
-                    shareholder=entry.get("shareholder", {}),
-                    contribution=entry.get("contribution", {}),
+                    shareholder=(
+                        entry.get("shareholder")
+                        if isinstance(entry.get("shareholder"), dict)
+                        else {}
+                    ),
+                    contribution=(
+                        entry.get("contribution")
+                        if isinstance(entry.get("contribution"), dict)
+                        else {}
+                    ),
                     contribution_ratio=entry.get("contribution_ratio"),
-                    raw=entry
+                    raw=entry,
                 )
             )
-        total_capital = data.get("total_capital")
-        return ShareholderInfo(entries=entries, total_capital=total_capital, raw=data)
+        return entries
 
     # --------------------------------
     # Ultimate beneficial owners (UBOs)
@@ -573,12 +696,25 @@ class Company:
             or []
         )
 
-        resolved = [UBOEntry(raw=entry) for entry in resolved_raw if isinstance(entry, dict)]
-        unresolved = [UBOEntry(raw=entry) for entry in unresolved_raw if isinstance(entry, dict)]
+        resolved = [
+            UBOEntry(raw=entry, resolved_hint=True)
+            for entry in resolved_raw
+            if isinstance(entry, dict)
+        ]
+        unresolved = [
+            UBOEntry(raw=entry, resolved_hint=False)
+            for entry in unresolved_raw
+            if isinstance(entry, dict)
+        ]
 
         coverage = data.get("coverage")
+        if coverage is None:
+            coverage = data.get("coverage_percentage")
         if coverage is None and isinstance(data.get("summary"), dict):
-            coverage = data["summary"].get("coverage")
+            coverage = (
+                data["summary"].get("coverage")
+                or data["summary"].get("coverage_percentage")
+            )
 
         return UBOInfo(
             resolved=resolved,
@@ -612,6 +748,17 @@ class Company:
             past=past,
             summary=summary,
             raw=data if isinstance(data, dict) else {},
+        )
+
+    # --------------------------------
+    # Mergers and acquisitions
+    # --------------------------------
+
+    @property
+    def mergers_and_acquisitions(self) -> MergersAndAcquisitions:
+        """Structured M&A transactions, succession, control and summary data."""
+        return MergersAndAcquisitions.from_payload(
+            self._data.get("mergers_and_acquisitions")
         )
 
     # --------------------------------
@@ -766,8 +913,16 @@ class Company:
     
     @property
     def publications(self) -> List[Dict[str, Any]]:
-        """Get the company publications list."""
-        return self._data.get("publications", [])
+        """
+        Get official publications/events.
+
+        The current API returns the ``publications`` feature under the
+        top-level response key ``history``. The older key remains a fallback.
+        """
+        value = self._data.get("history")
+        if not isinstance(value, list):
+            value = self._data.get("publications")
+        return list(value) if isinstance(value, list) else []
     
     # --------------------------------
     # Document fetching
@@ -783,8 +938,10 @@ class Company:
         
         :param document_type: Type of document to fetch. Valid values:
                               - "shareholders_list": Gesellschafterliste document
+                              - "articles_of_association": Articles/statutes
                               - "AD": Current excerpts (Aktuelle Daten)
                               - "CD": Historical excerpts (Chronologische Daten)
+                              - "SI": Structured information (XML)
         :param output_file: Optional path to save the PDF file. If not provided,
                             returns the PDF content as bytes.
         :return: PDF content as bytes (if output_file is not provided).
@@ -816,6 +973,15 @@ class Company:
     def request_credit_cost(self) -> int:
         """Get the credit cost of the API request."""
         return int(self.meta.get("request_credit_cost", 0))
+
+    @property
+    def credits_remaining(self) -> Optional[int]:
+        """Credits remaining after the API request, when provided."""
+        value = self.meta.get("credits_remaining")
+        try:
+            return int(value) if value is not None else None
+        except (TypeError, ValueError):
+            return None
     
     # --------------------------------
     # Special methods

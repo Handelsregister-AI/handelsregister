@@ -60,6 +60,9 @@ class PersonShareholdings:
     def all(self) -> List[ShareholdingEntry]:
         return self.current + self.past
 
+    def as_dict(self) -> Dict[str, Any]:
+        return self.raw
+
 
 class Person:
     """
@@ -149,6 +152,10 @@ class Person:
         return self.name_parts.get("family", "")
 
     @property
+    def maiden_name(self) -> str:
+        return self.name_parts.get("maiden", "") or ""
+
+    @property
     def canonical_name(self) -> str:
         return self.name_parts.get("canonical_name", "")
 
@@ -163,10 +170,15 @@ class Person:
 
     @property
     def home_city(self) -> str:
+        home = self.home_location
+        return home.get("city", "")
+
+    @property
+    def home_location(self) -> Dict[str, Any]:
         home = self.location.get("home") or {}
         if isinstance(home, dict):
-            return home.get("city", "")
-        return ""
+            return home
+        return {}
 
     @property
     def bio(self) -> str:
@@ -206,6 +218,11 @@ class Person:
     @property
     def github(self) -> str:
         return self.profiles.get("github", "") or ""
+
+    @property
+    def other_profiles(self) -> List[Any]:
+        value = self.profiles.get("other") or []
+        return list(value) if isinstance(value, list) else []
 
     # --------------------------------
     # Roles & affiliations
@@ -272,6 +289,14 @@ class Person:
     @property
     def request_credit_cost(self) -> int:
         return int(self.meta.get("request_credit_cost", 0))
+
+    @property
+    def credits_remaining(self) -> Optional[int]:
+        value = self.meta.get("credits_remaining")
+        try:
+            return int(value) if value is not None else None
+        except (TypeError, ValueError):
+            return None
 
     # --------------------------------
     # Special methods

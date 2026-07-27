@@ -44,7 +44,7 @@ class TestCompanyInitialization:
     def test_init_with_features(self, mock_client):
         """Test initialization with features."""
         features = ["related_persons", "financial_kpi"]
-        company = Company("KONUX GmbH", client=mock_client, features=features)
+        Company("KONUX GmbH", client=mock_client, features=features)
         mock_client.fetch_organization.assert_called_once_with(
             q="KONUX GmbH",
             features=features,
@@ -54,7 +54,7 @@ class TestCompanyInitialization:
 
     def test_init_with_ai_search(self, mock_client):
         """Test initialization with ai_search parameter."""
-        company = Company("KONUX GmbH", client=mock_client, ai_search="on")
+        Company("KONUX GmbH", client=mock_client, ai_search="on")
         mock_client.fetch_organization.assert_called_once_with(
             q="KONUX GmbH",
             features=[],
@@ -64,7 +64,7 @@ class TestCompanyInitialization:
 
     def test_init_with_realtime_mode(self, mock_client):
         """Realtime mode is forwarded to fetch_organization."""
-        company = Company(
+        Company(
             "KONUX GmbH", client=mock_client, realtime_mode="handelsregister-default"
         )
         mock_client.fetch_organization.assert_called_once_with(
@@ -76,7 +76,7 @@ class TestCompanyInitialization:
 
     def test_init_with_kwargs(self, mock_client):
         """Test initialization with additional kwargs."""
-        company = Company("KONUX GmbH", client=mock_client, some_param="value")
+        Company("KONUX GmbH", client=mock_client, some_param="value")
         mock_client.fetch_organization.assert_called_once_with(
             q="KONUX GmbH",
             features=[],

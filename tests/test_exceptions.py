@@ -1,5 +1,3 @@
-import pytest
-
 from handelsregister.exceptions import (
     HandelsregisterError,
     InvalidResponseError,

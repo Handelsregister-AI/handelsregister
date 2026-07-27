@@ -4,7 +4,7 @@ Example script demonstrating how to download official PDF documents from Handels
 
 This script shows how to:
 1. Search for a company
-2. Download different types of documents (shareholders list, current/historical excerpts)
+2. Download PDF and XML documents (shareholders list, excerpts, structured information)
 3. Handle errors appropriately
 
 To run:
@@ -73,6 +73,18 @@ def download_documents_using_client():
         print("  ✅ Saved to: konux_history.pdf")
     except HandelsregisterError as e:
         print(f"  ❌ Error downloading historical excerpts: {e}")
+
+    # Download structured information (SI - XML)
+    try:
+        print("\n  📄 Downloading structured information (SI)...")
+        client.fetch_document(
+            company_id=entity_id,
+            document_type="SI",
+            output_file="konux_structured.xml"
+        )
+        print("  ✅ Saved to: konux_structured.xml")
+    except HandelsregisterError as e:
+        print(f"  ❌ Error downloading structured information: {e}")
 
 
 def download_documents_using_company():

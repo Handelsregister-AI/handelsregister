@@ -32,7 +32,7 @@ SAMPLE_COMPANIES = [
 def main():
     # Create client
     client = Handelsregister(api_key=API_KEY)
-    print(f"🔑 Initialized Handelsregister client")
+    print("🔑 Initialized Handelsregister client")
     
     # Create temporary directory for our example
     with tempfile.TemporaryDirectory() as temp_dir:

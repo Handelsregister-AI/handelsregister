@@ -10,13 +10,15 @@ A modern Python client for the [Handelsregister.ai](https://handelsregister.ai) 
 
 - 🔎 **Company lookup** — `fetch-organization` with configurable feature flags
 - 👤 **Person profiles** — `fetch-person` (Handelsregister roles + web data)
-- 🗂️ **Search** — paginated `search-organizations` with postal-code filter
+- 🗂️ **Search** — query or filters-only search with geo, registry, size, and financial filters
 - 📊 **Financial data** — KPIs, balance sheet, P&L, full annual reports (MD/HTML)
 - 👥 **Management** — current and past related persons with roles
 - 🤝 **Shareholders, UBOs, shareholdings** — who owns the company, who the company owns
+- 🔀 **Mergers & acquisitions** — transactions, succession, enterprise agreements, and control relationships
+- ✍️ **Representation schemes** — current and historical company- and person-role representation rules
 - 📰 **News, publications, insolvency publications**
 - 🌐 **Website content** — structured Markdown, optimized for LLMs
-- 📄 **Document downloads** — Gesellschafterliste, Gesellschaftsvertrag, AD, CD
+- 📄 **Document downloads** — Gesellschafterliste, Gesellschaftsvertrag, AD/CD PDFs, and SI XML
 - 🔐 **Auth** — `x-api-key` header or Bearer token, plus token management
 - 📚 **Batch enrichment** — resilient CSV/JSON/XLSX enrichment with snapshots
 - ⚡ **Live mode** — opt-in realtime lookups against the Handelsregister
@@ -88,6 +90,7 @@ company = Company(
         "shareholders",
         "ubos",
         "shareholdings",
+        "mergers_and_acquisitions",
         "annual_financial_statements",
         "news",
     ],
@@ -111,6 +114,17 @@ for ubo in company.ubos.resolved:
 # Outbound shareholdings (what the company owns)
 for holding in company.shareholdings.current:
     print(holding.organization_name, holding.percentage)
+
+# Company- and person-level representation rules
+for rule in company.representation_scheme.active:
+    print(rule)
+
+for director in company.related_person_entries.current:
+    print(director.display_name, director.role_representation_scheme.active)
+
+# M&A transactions
+for transaction in company.mergers_and_acquisitions.transactions:
+    print(transaction.date, transaction.headline_text("en"))
 
 # News
 for article in company.news:
@@ -143,19 +157,35 @@ for holding in person.shareholdings.current:
 ### Search
 
 ```python
+from handelsregister import Handelsregister, RangeFilter, SearchFilters
+
 client = Handelsregister()
 
 page = client.search_organizations(
-    q="tech",
     limit=10,
     skip=0,
-    filters={"postal_code": "80992"},
+    filters=SearchFilters(
+        city="München",
+        legal_form_code=["GmbH", "AG"],
+        active=True,
+        pl_revenue=RangeFilter(gte=1_000_000, lte=5_000_000),
+    ),
+    ai_mode="on-default",  # optional; makes the search cost 5 credits
 )
 
 print(page["total"])
 for item in page["results"]:
     print(item["name"], item["registration"]["register_number"])
 ```
+
+`q` may be omitted when at least one filter is supplied. `filters` may also be
+an ordinary dictionary. Supported keys cover registration dates, legal forms,
+WZ/NACE industries, active status, postal code/city/state, radius search,
+register court/type/number, company size, employee ranges, seven balance-sheet
+ranges, and revenue/net-income/EBIT ranges. Range dictionaries use
+`{"gte": minimum, "lte": maximum}`; either bound may be omitted.
+The SDK automatically translates these documented flat financial keys to the
+live API's nested `financial_filters` wire format.
 
 ## 📄 Document Downloads
 
@@ -192,6 +222,12 @@ pdf_bytes = client.fetch_document(
     document_type="CD",                      # Chronologischer Ausdruck
 )
 
+xml_bytes = client.fetch_document(
+    company_id=entity_id,
+    document_type="SI",                      # Structured information (XML)
+    output_file="konux_structured.xml",
+)
+
 # Or via the Company helper
 company = Company("OroraTech GmbH München")
 company.fetch_document(
@@ -208,6 +244,7 @@ company.fetch_document(
 | `articles_of_association`  | Gesellschaftsvertrag / Satzung / Statut            |
 | `AD`                       | Aktuelle Daten (current excerpt)                   |
 | `CD`                       | Chronologische Daten (historical excerpt)          |
+| `SI`                       | Strukturierter Inhalt (XML)                        |
 
 ## 🔐 Bearer Token Management
 
@@ -293,6 +330,11 @@ $ handelsregister person \
 # Search
 $ handelsregister search "tech" --postal-code 80992 --limit 20
 
+# Filters-only search (JSON or repeated key=value)
+$ handelsregister search \
+    --filters '{"city":"München","pl_revenue":{"gte":1000000}}' \
+    --ai-mode on-default
+
 # Enrich a file
 $ handelsregister enrich companies.csv --input csv \
     --query-properties name=company_name location=city \
@@ -306,6 +348,9 @@ $ handelsregister document "KONUX GmbH München" \
 
 $ handelsregister document "KONUX GmbH München" \
     --type articles_of_association --output konux_articles.pdf
+
+$ handelsregister document "KONUX GmbH München" \
+    --type SI --output konux_structured.xml
 ```
 
 ## 📋 Available Features (`fetch-organization`)
@@ -325,8 +370,16 @@ $ handelsregister document "KONUX GmbH München" \
 | `shareholders` (beta)                | Shareholders with capital contribution and ratio              |
 | `ubos` (beta)                        | Ultimate beneficial owners (resolved / unresolved / coverage) |
 | `shareholdings` (beta)               | Outbound shareholdings (what the company owns in others)      |
+| `mergers_and_acquisitions` (beta)     | M&A transactions, succession, agreements, and control         |
 
 `realtime_mode="handelsregister-default"` forces a live Handelsregister lookup (+10 credits), independent of the feature flags above.
+It cannot be combined with `related_persons` or `publications`.
+
+The base response includes `representation_scheme`. Entries in
+`related_persons` may include both `organization_representation_scheme` and
+`role_representation_scheme`. Historical person records can expose their last
+applicable rules as `latest`; the SDK normalizes `current` and `latest` through
+the `.active` property.
 
 ## 🔍 `Company` properties
 
@@ -337,6 +390,7 @@ company.entity_id
 company.status
 company.is_active
 company.purpose
+company.representation_scheme          # RepresentationScheme
 
 # Registration
 company.registration_number
@@ -369,9 +423,11 @@ company.get_annual_financial_statement_for_year(2023, html=True)
 company.current_related_persons
 company.past_related_persons
 company.get_related_persons_by_role("MANAGING_DIRECTOR")
+company.related_person_entries         # typed persons + representation schemes
 company.shareholders           # ShareholderInfo
 company.ubos                   # UBOInfo
 company.shareholdings          # ShareholdingsInfo
+company.mergers_and_acquisitions  # MergersAndAcquisitions
 
 # News & publications
 company.publications
@@ -388,15 +444,18 @@ person.name
 person.canonical_name
 person.given_name
 person.family_name
+person.maiden_name
 person.previous_names
 person.birth_date
 person.home_city
+person.home_location
 person.bio
 person.expertise
 person.emails
 person.phones
 person.linkedin
 person.github
+person.other_profiles
 
 person.handelsregister_roles
 person.current_handelsregister_roles
@@ -405,6 +464,18 @@ person.affiliations
 
 person.shareholdings           # PersonShareholdings (requires feature flag)
 ```
+
+## Error handling
+
+All API exceptions inherit from `HandelsregisterError`. Documented HTTP
+responses are mapped to `RequestValidationError` (HTTP 400/422), `AuthenticationError`,
+`InsufficientCreditsError`, `ForbiddenError` /
+`SubscriptionRequiredError`, `NotFoundError`, `RateLimitError`, and
+`RequestTimeoutError` / `ServerError`. API exceptions preserve `status_code`, the raw JSON `payload`,
+and billing metadata through `.meta`.
+
+Only network failures, HTTP 408/429, and server errors are retried. When supplied,
+the API's `Retry-After` header controls the delay.
 
 ## 📜 License
 

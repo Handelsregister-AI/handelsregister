@@ -4,8 +4,10 @@ import time
 import logging
 import hashlib
 import httpx
-from datetime import datetime
-from typing import List, Optional, Dict, Any, Union
+from datetime import datetime, timezone
+from email.utils import parsedate_to_datetime
+from enum import Enum
+from typing import List, Optional, Dict, Any, Union, Iterable, Mapping
 from pathlib import Path
 from glob import glob
 
@@ -15,7 +17,25 @@ except ImportError as exc:
     raise ImportError("tqdm is required for this package to run. Please install it.") from exc
 
 from .version import __version__
-from .exceptions import HandelsregisterError, InvalidResponseError, AuthenticationError
+from .constants import (
+    DOCUMENT_TYPES,
+    REALTIME_INCOMPATIBLE_FEATURES,
+    normalize_features,
+)
+from .exceptions import (
+    APIError,
+    AuthenticationError,
+    ForbiddenError,
+    HandelsregisterError,
+    InsufficientCreditsError,
+    InvalidResponseError,
+    NotFoundError,
+    RateLimitError,
+    RequestTimeoutError,
+    RequestValidationError,
+    ServerError,
+    SubscriptionRequiredError,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -93,7 +113,7 @@ class Handelsregister:
 
         self.cache_enabled = cache_enabled
         self.rate_limit = rate_limit
-        self._cache: Dict[tuple, Dict[str, Any]] = {}
+        self._cache: Dict[tuple, Any] = {}
         self._last_request_time = 0.0
 
         logger.debug("Handelsregister client initialized with base_url=%s", self.base_url)
@@ -107,6 +127,99 @@ class Handelsregister:
             elapsed = time.time() - self._last_request_time
             if elapsed < self.rate_limit:
                 time.sleep(self.rate_limit - elapsed)
+
+    @staticmethod
+    def _response_payload(response: httpx.Response) -> Any:
+        try:
+            return response.json()
+        except (ValueError, TypeError):
+            return None
+
+    @staticmethod
+    def _error_message(status_code: int, payload: Any) -> str:
+        if isinstance(payload, dict):
+            error = payload.get("error")
+            if isinstance(error, str) and error:
+                return error
+            meta = payload.get("meta")
+            if isinstance(meta, dict) and isinstance(meta.get("message"), str):
+                return meta["message"]
+            detail = payload.get("detail")
+            if isinstance(detail, str) and detail:
+                return detail
+            if isinstance(detail, list):
+                messages = [
+                    item.get("msg")
+                    for item in detail
+                    if isinstance(item, dict) and isinstance(item.get("msg"), str)
+                ]
+                if messages:
+                    return "; ".join(messages)
+        return f"handelsregister.ai API request failed with HTTP {status_code}"
+
+    @staticmethod
+    def _headers_dict(response: httpx.Response) -> Dict[str, str]:
+        try:
+            return {str(k): str(v) for k, v in response.headers.items()}
+        except (AttributeError, TypeError, ValueError):
+            return {}
+
+    def _raise_api_error(self, response: httpx.Response) -> None:
+        status_code = int(response.status_code)
+        payload = self._response_payload(response)
+        message = self._error_message(status_code, payload)
+        kwargs = {
+            "status_code": status_code,
+            "payload": payload,
+            "response_headers": self._headers_dict(response),
+        }
+
+        if status_code in {400, 422}:
+            raise RequestValidationError(message, **kwargs)
+        if status_code == 401:
+            raise AuthenticationError(message, **kwargs)
+        if status_code == 402:
+            raise InsufficientCreditsError(message, **kwargs)
+        if status_code == 403:
+            if isinstance(payload, dict) and payload.get("error") == "subscription_required":
+                raise SubscriptionRequiredError(message, **kwargs)
+            raise ForbiddenError(message, **kwargs)
+        if status_code == 404:
+            raise NotFoundError(message, **kwargs)
+        if status_code == 408:
+            raise RequestTimeoutError(message, **kwargs)
+        if status_code == 429:
+            raise RateLimitError(message, **kwargs)
+        if status_code >= 500:
+            raise ServerError(message, **kwargs)
+        raise APIError(message, **kwargs)
+
+    @staticmethod
+    def _retry_delay(response: Optional[httpx.Response], attempt: int) -> float:
+        if response is not None:
+            try:
+                retry_after = response.headers.get("retry-after")
+            except (AttributeError, TypeError):
+                retry_after = None
+            if retry_after:
+                try:
+                    return max(0.0, float(retry_after))
+                except (TypeError, ValueError):
+                    try:
+                        retry_at = parsedate_to_datetime(retry_after)
+                        if retry_at.tzinfo is None:
+                            retry_at = retry_at.replace(tzinfo=timezone.utc)
+                        return max(
+                            0.0,
+                            (retry_at - datetime.now(timezone.utc)).total_seconds(),
+                        )
+                    except (TypeError, ValueError, OverflowError):
+                        pass
+        return float(2 ** attempt)
+
+    @staticmethod
+    def _is_retryable_status(status_code: int) -> bool:
+        return status_code in {408, 429} or status_code >= 500
 
     def _request(
         self,
@@ -134,7 +247,26 @@ class Handelsregister:
                 with httpx.Client(timeout=self.timeout) as client:
                     logger.debug("Making GET request to %s with params=%s", url, params)
                     response = client.get(url, headers=self.headers, params=params)
-                    response.raise_for_status()
+                    try:
+                        response.raise_for_status()
+                    except httpx.HTTPStatusError as exc:
+                        error_response = exc.response
+                        status_code = int(error_response.status_code)
+                        if (
+                            self._is_retryable_status(status_code)
+                            and attempt < max_retries - 1
+                        ):
+                            delay = self._retry_delay(error_response, attempt)
+                            logger.warning(
+                                "Retryable HTTP %d (attempt %d/%d); retrying in %.1fs",
+                                status_code,
+                                attempt + 1,
+                                max_retries,
+                                delay,
+                            )
+                            time.sleep(delay)
+                            continue
+                        self._raise_api_error(error_response)
                     self._last_request_time = time.time()
                     if not expect_json:
                         return response
@@ -142,17 +274,9 @@ class Handelsregister:
 
             except httpx.RequestError as exc:
                 logger.warning("Request error (attempt %d/%d): %s", attempt + 1, max_retries, exc)
-                time.sleep(2 ** attempt)
                 if attempt == max_retries - 1:
                     raise HandelsregisterError(f"Error while requesting data: {exc}") from exc
-
-            except httpx.HTTPStatusError as exc:
-                logger.warning("HTTP status error (attempt %d/%d): %s", attempt + 1, max_retries, exc)
-                if exc.response.status_code == 401:
-                    raise AuthenticationError("Invalid API key or unauthorized access.") from exc
-                time.sleep(2 ** attempt)
-                if attempt == max_retries - 1:
-                    raise HandelsregisterError(f"HTTP error occurred: {exc}") from exc
+                time.sleep(self._retry_delay(None, attempt))
 
             except ValueError as exc:
                 logger.error("Invalid JSON response: %s", exc)
@@ -172,20 +296,24 @@ class Handelsregister:
             try:
                 with httpx.Client(timeout=self.timeout) as client:
                     response = client.post(url, headers=self.headers, json=json_body or {})
-                    response.raise_for_status()
+                    try:
+                        response.raise_for_status()
+                    except httpx.HTTPStatusError as exc:
+                        error_response = exc.response
+                        status_code = int(error_response.status_code)
+                        if (
+                            self._is_retryable_status(status_code)
+                            and attempt < max_retries - 1
+                        ):
+                            time.sleep(self._retry_delay(error_response, attempt))
+                            continue
+                        self._raise_api_error(error_response)
                     self._last_request_time = time.time()
                     return response.json()
             except httpx.RequestError as exc:
-                logger.warning("Request error (attempt %d/%d): %s", attempt + 1, max_retries, exc)
-                time.sleep(2 ** attempt)
                 if attempt == max_retries - 1:
                     raise HandelsregisterError(f"Error while requesting data: {exc}") from exc
-            except httpx.HTTPStatusError as exc:
-                if exc.response.status_code == 401:
-                    raise AuthenticationError("Invalid API key or unauthorized access.") from exc
-                time.sleep(2 ** attempt)
-                if attempt == max_retries - 1:
-                    raise HandelsregisterError(f"HTTP error occurred: {exc}") from exc
+                time.sleep(self._retry_delay(None, attempt))
             except ValueError as exc:
                 raise InvalidResponseError(f"Received non-JSON response: {exc}") from exc
 
@@ -202,21 +330,26 @@ class Handelsregister:
             try:
                 with httpx.Client(timeout=self.timeout) as client:
                     response = client.delete(url, headers=self.headers)
-                    response.raise_for_status()
+                    try:
+                        response.raise_for_status()
+                    except httpx.HTTPStatusError as exc:
+                        error_response = exc.response
+                        status_code = int(error_response.status_code)
+                        if (
+                            self._is_retryable_status(status_code)
+                            and attempt < max_retries - 1
+                        ):
+                            time.sleep(self._retry_delay(error_response, attempt))
+                            continue
+                        self._raise_api_error(error_response)
                     self._last_request_time = time.time()
                     if not response.content:
                         return {}
                     return response.json()
             except httpx.RequestError as exc:
-                time.sleep(2 ** attempt)
                 if attempt == max_retries - 1:
                     raise HandelsregisterError(f"Error while requesting data: {exc}") from exc
-            except httpx.HTTPStatusError as exc:
-                if exc.response.status_code == 401:
-                    raise AuthenticationError("Invalid API key or unauthorized access.") from exc
-                time.sleep(2 ** attempt)
-                if attempt == max_retries - 1:
-                    raise HandelsregisterError(f"HTTP error occurred: {exc}") from exc
+                time.sleep(self._retry_delay(None, attempt))
             except ValueError as exc:
                 raise InvalidResponseError(f"Received non-JSON response: {exc}") from exc
 
@@ -227,7 +360,7 @@ class Handelsregister:
     def fetch_organization(
         self,
         q: str,
-        features: Optional[List[str]] = None,
+        features: Optional[Iterable[Union[str, Enum]]] = None,
         ai_search: Optional[str] = None,
         realtime_mode: Optional[str] = None,
         **kwargs,
@@ -242,7 +375,7 @@ class Handelsregister:
                 balance_sheet_accounts, profit_and_loss_account,
                 annual_financial_statements, annual_financial_statements__html,
                 insolvency_publications, news, website_content,
-                shareholders, ubos, shareholdings
+                shareholders, ubos, shareholdings, mergers_and_acquisitions
 
         :param ai_search: Pass ``"on-default"`` to enable AI-based search.
         :param realtime_mode: Pass ``"handelsregister-default"`` to enable live
@@ -254,15 +387,28 @@ class Handelsregister:
         if not q:
             raise ValueError("Parameter 'q' is required.")
 
+        normalized_features = normalize_features(features)
+        if ai_search == "off":
+            ai_search = None
+        if realtime_mode:
+            incompatible = sorted(
+                set(normalized_features) & REALTIME_INCOMPATIBLE_FEATURES
+            )
+            if incompatible:
+                raise ValueError(
+                    "realtime_mode cannot be combined with: "
+                    + ", ".join(incompatible)
+                )
+
         logger.debug(
             "Fetching organization data for q=%s, features=%s, ai_search=%s, realtime_mode=%s",
-            q, features, ai_search, realtime_mode,
+            q, normalized_features, ai_search, realtime_mode,
         )
 
         params: Dict[str, Any] = {"q": q}
 
-        if features:
-            params["feature"] = list(features)
+        if normalized_features:
+            params["feature"] = normalized_features
         if ai_search:
             params["ai_search"] = ai_search
         if realtime_mode:
@@ -274,19 +420,20 @@ class Handelsregister:
         cache_key = (
             "fetch-organization",
             q,
-            tuple(sorted(features)) if features else (),
+            tuple(sorted(normalized_features)),
             ai_search,
             realtime_mode,
             tuple(sorted((k, self._stable(v)) for k, v in kwargs.items())),
         )
 
-        if self.cache_enabled and cache_key in self._cache:
+        use_cache = self.cache_enabled and not realtime_mode
+        if use_cache and cache_key in self._cache:
             logger.debug("Returning cached result for %s", q)
             return self._cache[cache_key]
 
         data = self._request("fetch-organization", params=params)
 
-        if self.cache_enabled:
+        if use_cache:
             self._cache[cache_key] = data
         return data
 
@@ -294,7 +441,7 @@ class Handelsregister:
         self,
         person_q: str,
         organization_q: str,
-        features: Optional[List[str]] = None,
+        features: Optional[Iterable[Union[str, Enum]]] = None,
         **kwargs,
     ) -> Dict[str, Any]:
         """
@@ -317,12 +464,13 @@ class Handelsregister:
         if not organization_q or len(organization_q.strip()) < 2:
             raise ValueError("Parameter 'organization_q' is required (min. 2 characters).")
 
+        normalized_features = normalize_features(features)
         params: Dict[str, Any] = {
             "person_q": person_q,
             "organization_q": organization_q,
         }
-        if features:
-            params["feature"] = list(features)
+        if normalized_features:
+            params["feature"] = normalized_features
         for key, value in kwargs.items():
             params[key] = value
 
@@ -330,7 +478,7 @@ class Handelsregister:
             "fetch-person",
             person_q,
             organization_q,
-            tuple(sorted(features)) if features else (),
+            tuple(sorted(normalized_features)),
             tuple(sorted((k, self._stable(v)) for k, v in kwargs.items())),
         )
         if self.cache_enabled and cache_key in self._cache:
@@ -344,37 +492,52 @@ class Handelsregister:
 
     def search_organizations(
         self,
-        q: str,
+        q: Optional[str] = None,
         skip: int = 0,
         limit: int = 10,
-        filters: Optional[Dict[str, Any]] = None,
+        filters: Optional[Union[Mapping[str, Any], Any]] = None,
+        ai_mode: Optional[str] = None,
         **kwargs,
     ) -> Dict[str, Any]:
         """
         Search German organizations.
 
-        :param q: Search query (min. 2 characters, required).
+        Either ``q`` or ``filters`` must be supplied.
+
+        :param q: Optional search query (min. 2 characters).
         :param skip: Pagination offset (default 0).
-        :param limit: Results per page (default 10, max 100).
-        :param filters: Filter object; currently supports ``postal_code``,
-                        e.g. ``{"postal_code": "80992"}``.
+        :param limit: Results per page (default 10, max 30).
+        :param filters: Documented search filter mapping, including registration,
+                        location, register, employee and financial range filters.
+                        Objects exposing ``to_dict()`` are also accepted.
+        :param ai_mode: Pass ``"on-default"`` to enable AI-assisted search.
         :param kwargs: Additional query parameters supported by the API.
         :return: Parsed JSON response (``{"results": [...], "total": int, ...}``).
         """
-        if not q or len(q.strip()) < 2:
-            raise ValueError("Parameter 'q' is required (min. 2 characters).")
-        if limit is not None and (limit < 1 or limit > 100):
-            raise ValueError("Parameter 'limit' must be between 1 and 100.")
+        filter_data = self._prepare_search_filters(filters)
+        if q is not None:
+            q = q.strip()
+            if q and len(q) < 2:
+                raise ValueError("Parameter 'q' must contain min. 2 characters.")
+            if not q:
+                q = None
+        if q is None and not filter_data:
+            raise ValueError("Either parameter 'q' or 'filters' is required.")
+        if limit is not None and (limit < 1 or limit > 30):
+            raise ValueError("Parameter 'limit' must be between 1 and 30.")
         if skip is not None and skip < 0:
             raise ValueError("Parameter 'skip' must be >= 0.")
 
         params: Dict[str, Any] = {
-            "q": q,
             "skip": skip,
             "limit": limit,
         }
-        if filters:
-            params["filters"] = json.dumps(filters, ensure_ascii=False)
+        if q is not None:
+            params["q"] = q
+        if filter_data:
+            params["filters"] = json.dumps(filter_data, ensure_ascii=False)
+        if ai_mode:
+            params["ai_mode"] = ai_mode
         for key, value in kwargs.items():
             params[key] = value
 
@@ -383,7 +546,8 @@ class Handelsregister:
             q,
             skip,
             limit,
-            tuple(sorted(filters.items())) if filters else (),
+            self._stable(filter_data),
+            ai_mode,
             tuple(sorted((k, self._stable(v)) for k, v in kwargs.items())),
         )
         if self.cache_enabled and cache_key in self._cache:
@@ -393,6 +557,80 @@ class Handelsregister:
 
         if self.cache_enabled:
             self._cache[cache_key] = data
+        return data
+
+    @staticmethod
+    def _prepare_search_filters(filters: Any) -> Dict[str, Any]:
+        if filters is None:
+            return {}
+        if hasattr(filters, "to_dict") and callable(filters.to_dict):
+            filters = filters.to_dict()
+        if not isinstance(filters, Mapping):
+            raise TypeError("Parameter 'filters' must be a mapping or expose to_dict().")
+
+        data = dict(filters)
+
+        # The public documentation exposes financial range filters as flat
+        # keys. The live search service groups them under ``financial_filters``.
+        # Keep the documented SDK input while emitting the current wire shape.
+        financial_keys = {
+            "emp_count",
+            "bs_assets_total",
+            "bs_equity_total",
+            "bs_liabilities_total",
+            "bs_cash_and_equivalents",
+            "bs_cash_to_liabilities",
+            "bs_equity_ratio",
+            "bs_debt_to_assets",
+            "pl_revenue",
+            "pl_net_income",
+            "pl_ebit",
+        }
+        financial_filters = data.get("financial_filters")
+        if financial_filters is None:
+            financial_filters = {}
+        elif not isinstance(financial_filters, Mapping):
+            raise TypeError("Filter 'financial_filters' must be a mapping.")
+        else:
+            financial_filters = dict(financial_filters)
+        for key in financial_keys:
+            if key in data:
+                financial_filters[key] = data.pop(key)
+        if financial_filters:
+            data["financial_filters"] = financial_filters
+
+        # The live API names the employee-based size bucket
+        # ``emp_size_category``. Preserve the documented friendly name.
+        if "company_size_category" in data and "emp_size_category" not in data:
+            data["emp_size_category"] = data.pop("company_size_category")
+
+        distance = data.get("location_max_distance_km")
+        if distance is not None:
+            if "location_coordinates" not in data:
+                raise ValueError(
+                    "Filter 'location_max_distance_km' requires "
+                    "'location_coordinates'."
+                )
+            if not isinstance(distance, (int, float)) or not 1 <= distance <= 100:
+                raise ValueError(
+                    "Filter 'location_max_distance_km' must be between 1 and 100."
+                )
+
+        values_to_validate = dict(data)
+        if isinstance(data.get("financial_filters"), Mapping):
+            values_to_validate.update(data["financial_filters"])
+        for key, value in values_to_validate.items():
+            if isinstance(value, dict) and (
+                "gte" in value or "lte" in value
+            ):
+                unknown = set(value) - {"gte", "lte"}
+                if unknown:
+                    raise ValueError(
+                        f"Range filter '{key}' contains unsupported keys: "
+                        + ", ".join(sorted(unknown))
+                    )
+                if not value:
+                    raise ValueError(f"Range filter '{key}' must not be empty.")
         return data
 
     def fetch_organization_df(self, *args, **kwargs):
@@ -408,16 +646,17 @@ class Handelsregister:
         output_file: Optional[str] = None,
     ) -> bytes:
         """
-        Fetch official PDF documents from the German Handelsregister.
+        Fetch official documents from the German Handelsregister.
 
         :param company_id: Unique company entity ID returned by the search
                            or fetch endpoints.
         :param document_type: One of ``"shareholders_list"``,
                               ``"articles_of_association"``, ``"AD"``,
-                              or ``"CD"``.
-        :param output_file: Optional path to save the PDF to. The PDF bytes are
+                              ``"CD"`` or ``"SI"``. SI is returned as XML;
+                              all other document types are returned as PDF.
+        :param output_file: Optional path to save the document. Its bytes are
                             always returned in addition to being written.
-        :return: PDF content as bytes.
+        :return: Document content as bytes.
         :raises HandelsregisterError: On request or response failure.
         :raises ValueError: When parameters are missing or invalid.
         """
@@ -426,16 +665,12 @@ class Handelsregister:
         if not document_type:
             raise ValueError("Parameter 'document_type' is required.")
 
-        valid_document_types = {
-            "shareholders_list",
-            "articles_of_association",
-            "AD",
-            "CD",
-        }
-        if document_type not in valid_document_types:
+        if isinstance(document_type, Enum):
+            document_type = str(document_type.value)
+        if document_type not in DOCUMENT_TYPES:
             raise ValueError(
                 f"Invalid document_type '{document_type}'. "
-                f"Valid values are: {', '.join(sorted(valid_document_types))}"
+                f"Valid values are: {', '.join(DOCUMENT_TYPES)}"
             )
 
         logger.debug(
@@ -450,23 +685,28 @@ class Handelsregister:
 
         response = self._request("fetch-document", params=params, expect_json=False)
 
-        content_type = response.headers.get("content-type", "")
-        if "application/pdf" not in content_type:
-            try:
-                error_data = response.json()
-                error_msg = error_data.get("error", "Unknown error")
+        content_type = response.headers.get("content-type", "").lower()
+        expected_types = (
+            ("application/xml", "text/xml")
+            if document_type == "SI"
+            else ("application/pdf",)
+        )
+        if not any(expected in content_type for expected in expected_types):
+            error_data = self._response_payload(response)
+            if isinstance(error_data, dict):
+                error_msg = self._error_message(200, error_data)
                 raise HandelsregisterError(f"API error: {error_msg}")
-            except ValueError:
-                raise InvalidResponseError(
-                    f"Expected PDF response but got {content_type}"
-                )
+            expected_label = "XML" if document_type == "SI" else "PDF"
+            raise InvalidResponseError(
+                f"Expected {expected_label} response but got {content_type or 'unknown'}"
+            )
 
-        pdf_content = response.content
+        document_content = response.content
         if output_file:
             with open(output_file, "wb") as f:
-                f.write(pdf_content)
+                f.write(document_content)
             logger.info("Document saved to %s", output_file)
-        return pdf_content
+        return document_content
 
     # -------------------------------------------------------------------
     # Token management (Bearer tokens)
@@ -894,6 +1134,24 @@ class Handelsregister:
                 parts = [p for p in [name, desc, start] if p]
                 hist_parts.append(" - ".join(parts))
             flat["history"] = " || ".join(hist_parts)
+
+        # Preserve every additional current or future API field in tabular
+        # enrichment output. Variable-depth structures (representation
+        # schemes, ownership graphs, M&A transactions, reports, etc.) are
+        # encoded as deterministic JSON rather than being silently dropped or
+        # exploded into an unstable set of columns.
+        for key, value in result.items():
+            if key in flat:
+                continue
+            if isinstance(value, (dict, list)):
+                flat[key] = json.dumps(
+                    value,
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                )
+            else:
+                flat[key] = value
 
         return flat
 

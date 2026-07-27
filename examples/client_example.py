@@ -11,7 +11,6 @@ To run:
 python client_example.py
 """
 import os
-import json
 from handelsregister import Handelsregister
 
 # Set your API key (or use environment variable HANDELSREGISTER_API_KEY)
@@ -20,7 +19,7 @@ API_KEY = os.getenv("HANDELSREGISTER_API_KEY", "your_api_key_here")
 def main():
     # Initialize the client
     client = Handelsregister(api_key=API_KEY)
-    print(f"🔑 Initialized Handelsregister client")
+    print("🔑 Initialized Handelsregister client")
     
     # Basic company lookup
     print("\n🔍 Basic company lookup")
@@ -39,6 +38,7 @@ def main():
             "financial_kpi",           # Include financial KPIs
             "related_persons",         # Include management/related persons
             "balance_sheet_accounts",  # Include balance sheets
+            "mergers_and_acquisitions", # Include M&A and control relationships
         ],
         ai_search="off"                # Disable AI-based search
     )
@@ -60,6 +60,15 @@ def main():
         for person in related_persons:
             role = person.get("role", {}).get("en", {}).get("long", "")
             print(f"  {person.get('name')} - {role}")
+
+    representation = company_data.get("representation_scheme") or {}
+    for rule in representation.get("current", []):
+        print(f"  Representation: {rule}")
+
+    ma_data = company_data.get("mergers_and_acquisitions") or {}
+    for transaction in ma_data.get("transactions", []):
+        headline = transaction.get("headline", {}).get("en", "")
+        print(f"  M&A: {transaction.get('date')} — {headline}")
     
     print("\n✅ Example completed")
 

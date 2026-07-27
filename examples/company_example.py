@@ -27,6 +27,7 @@ def main():
             "balance_sheet_accounts",  # Get balance sheet data
             "profit_and_loss_account", # Get profit and loss data,
             "shareholders",             # Get shareholder information
+            "mergers_and_acquisitions", # Get M&A and control relationships
         ],
         ai_search="off"                # Disable AI-based search
     )
@@ -47,6 +48,18 @@ def main():
         name = person.get("name", "Unknown")
         start_date = person.get("start_date", "Unknown")
         print(f"  {name} - {role} (since {start_date})")
+
+    print("\n✍️ Representation:")
+    for rule in company.representation_scheme.active:
+        print(f"  {rule}")
+
+    for person in company.related_person_entries.current:
+        for rule in person.role_representation_scheme.active:
+            print(f"  {person.display_name}: {rule}")
+
+    print("\n🔀 Mergers & Acquisitions:")
+    for transaction in company.mergers_and_acquisitions.transactions:
+        print(f"  {transaction.date}: {transaction.headline_text('en')}")
     
     # Shareholder information
     print("\n🤝 Shareholders:")

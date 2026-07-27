@@ -1,7 +1,6 @@
 import json
 import os
 import pytest
-import tempfile
 from unittest.mock import MagicMock, patch
 import pandas as pd
 

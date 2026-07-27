@@ -1,6 +1,5 @@
 import sys
 import json
-from unittest.mock import patch
 
 from handelsregister.cli import main as cli_main, DEFAULT_FEATURES
 from handelsregister.client import Handelsregister

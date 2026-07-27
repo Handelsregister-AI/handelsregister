@@ -5,7 +5,7 @@ build-backend  = "setuptools.build_meta"
 
 [project]
 name            = "handelsregister"
-version         = "0.4.0"
+dynamic         = ["version"]
 description     = "Python SDK für den Zugriff auf die Handelsregister AI API"
 readme          = "README.md"
 authors         = [
@@ -22,6 +22,9 @@ classifiers     = [
   "Programming Language :: Python :: 3.8",
   "Programming Language :: Python :: 3.9",
   "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
 ]
 keywords        = [
   "handelsregister", "api", "german company data", "business data"
@@ -34,7 +37,7 @@ dependencies    = [
   "openpyxl>=3.0.0",
   "rich>=13.0.0",
 ]
-requires-python = ">=3.7"
+requires-python = ">=3.8"
 
 [project.urls]
 Homepage     = "https://github.com/Handelsregister-AI/handelsregister"
@@ -47,6 +50,9 @@ packages = ["handelsregister"]  # simple, explicit package list
 # the "unrecognized or malformed field 'license-file'" error. We explicitly
 # disable this behaviour and include the LICENSE via MANIFEST.in instead.
 license-files = []
+
+[tool.setuptools.dynamic]
+version = { attr = "handelsregister.version.__version__" }
 
 [project.scripts]
 handelsregister = "handelsregister.cli:main"

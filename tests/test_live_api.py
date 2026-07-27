@@ -23,8 +23,12 @@ import pytest
 from handelsregister import (
     Company,
     Handelsregister,
+    MergersAndAcquisitions,
+    ORGANIZATION_FEATURES,
     Person,
     PersonShareholdings,
+    RangeFilter,
+    SearchFilters,
     ShareholderInfo,
     ShareholdingsInfo,
     UBOInfo,
@@ -32,23 +36,17 @@ from handelsregister import (
 
 
 COMPANY_QUERY = "KONUX GmbH München"
+COMPANY_ENTITY_ID = "110fe0da2f84c8d3174ec7bfd1f0f15a"
 
-ALL_FEATURES = [
-    "related_persons",
-    "publications",
-    "financial_kpi",
-    "balance_sheet_accounts",
-    "profit_and_loss_account",
-    "shareholders",
-    "ubos",
-    "shareholdings",
-]
+ALL_FEATURES = list(ORGANIZATION_FEATURES)
 
 
 @pytest.fixture(scope="module")
 def live_client():
     """Module-scoped real client so the full_company fixture can reuse it."""
-    api_key = os.getenv("HANDELSREGISTER_API_KEY")
+    api_key = os.getenv("HANDELSREGISTER_API_KEY") or os.getenv(
+        "HANDELSREGISTER_API_KEY_THROW_AWAY"
+    )
     if not api_key:
         pytest.skip("HANDELSREGISTER_API_KEY environment variable not set")
     return Handelsregister(api_key=api_key)
@@ -61,6 +59,7 @@ def full_company(live_client):
         COMPANY_QUERY,
         client=live_client,
         features=ALL_FEATURES,
+        ai_search="on-default",
     )
 
 
@@ -114,6 +113,18 @@ class TestSearchOrganizations:
         assert isinstance(result, dict)
         assert "results" in result
 
+    def test_filters_only_search_with_financial_range(self, live_client):
+        result = live_client.search_organizations(
+            limit=3,
+            filters=SearchFilters(
+                city="München",
+                legal_form_code="GmbH",
+                pl_revenue=RangeFilter(gte=1_000_000),
+            ),
+        )
+        assert isinstance(result, dict)
+        assert isinstance(result.get("results"), list)
+
 
 @pytest.mark.live_api
 class TestCompanyBasics:
@@ -126,6 +137,8 @@ class TestCompanyBasics:
         assert full_company.legal_form_name
         assert full_company.formatted_address
         assert isinstance(full_company.is_active, bool)
+        assert isinstance(full_company.representation_scheme.current, list)
+        assert isinstance(full_company.representation_scheme.history, list)
 
 
 @pytest.mark.live_api
@@ -141,6 +154,13 @@ class TestRelatedPersons:
             "MANAGING_DIRECTOR", current_only=True
         )
         assert len(directors) > 0
+
+    def test_representation_schemes(self, full_company):
+        entries = full_company.related_person_entries
+        assert entries.current
+        first = entries.current[0]
+        assert isinstance(first.organization_representation_scheme.history, list)
+        assert isinstance(first.role_representation_scheme.history, list)
 
 
 @pytest.mark.live_api
@@ -212,6 +232,27 @@ class TestShareholdings:
 
 
 @pytest.mark.live_api
+class TestMergersAndAcquisitions:
+    def test_typed_wrapper(self, full_company):
+        info = full_company.mergers_and_acquisitions
+        assert isinstance(info, MergersAndAcquisitions)
+        assert isinstance(info.transactions, list)
+        assert isinstance(info.summary, dict)
+
+    def test_known_company_has_transactions(self, live_client):
+        data = live_client.fetch_organization(
+            q="Teltec AG",
+            features=["mergers_and_acquisitions"],
+        )
+        info = MergersAndAcquisitions.from_payload(
+            data.get("mergers_and_acquisitions")
+        )
+        assert info.transactions
+        assert info.transactions[0].id
+        assert info.transactions[0].counterparties
+
+
+@pytest.mark.live_api
 class TestPublications:
     def test_publications_returned(self, full_company):
         assert isinstance(full_company.publications, list)
@@ -224,35 +265,18 @@ class TestFetchDocument:
         assert isinstance(pdf, bytes)
         assert pdf.startswith(b"%PDF"), "response is not a PDF"
 
+    def test_fetch_si_xml(self, live_client):
+        xml = live_client.fetch_document(COMPANY_ENTITY_ID, "SI")
+        assert isinstance(xml, bytes)
+        assert xml.lstrip().startswith(b"<"), "response is not XML"
+
 
 @pytest.mark.live_api
 class TestPerson:
-    def test_fetch_person_with_shareholdings(self, full_company, live_client):
-        directors = full_company.get_related_persons_by_role(
-            "MANAGING_DIRECTOR", current_only=True
-        )
-        if not directors:
-            pytest.skip("no current managing director to query")
-
-        director = directors[0]
-        # The related-persons payload may store a name as a dict
-        # ({"given": "...", "family": "..."}) or as a flat string.
-        name_field = director.get("name")
-        if isinstance(name_field, dict):
-            given = name_field.get("given") or director.get("given_name")
-            family = name_field.get("family") or director.get("family_name")
-            person_q = " ".join(filter(None, [given, family])).strip()
-        elif isinstance(name_field, str):
-            person_q = name_field
-        else:
-            person_q = director.get("display_name") or ""
-
-        if not person_q or len(person_q) < 2:
-            pytest.skip(f"could not derive person query from director: {director!r}")
-
+    def test_fetch_person_with_shareholdings(self, live_client):
         person = Person(
-            person_q=person_q,
-            organization_q=full_company.name,
+            person_q="Johanna Leisch",
+            organization_q="KONUX GmbH",
             client=live_client,
             features=["shareholdings"],
         )

@@ -10,8 +10,6 @@ and one of its managing directors to see live data.
 Run:
     python person_example.py
 """
-import os
-
 from handelsregister import Person
 
 
@@ -27,6 +25,7 @@ def main():
     print(f"Canonical name:  {person.canonical_name}")
     print(f"Birth date:      {person.birth_date}")
     print(f"City:            {person.home_city}")
+    print(f"Maiden name:     {person.maiden_name}")
     print(f"LinkedIn:        {person.linkedin}")
 
     if person.bio:
