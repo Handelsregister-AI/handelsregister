@@ -45,3 +45,14 @@ def test_fetch_defaults(monkeypatch, sample_organization_response):
 
     assert called['features'] == DEFAULT_FEATURES
     assert called['ai_search'] == "on-default"
+
+
+def test_search_help_documents_30_result_maximum(capsys, monkeypatch):
+    monkeypatch.setattr(sys, "argv", ["prog", "search", "--help"])
+
+    try:
+        cli_main()
+    except SystemExit as exc:
+        assert exc.code == 0
+
+    assert "maximum: 30" in capsys.readouterr().out

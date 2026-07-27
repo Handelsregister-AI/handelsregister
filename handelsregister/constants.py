@@ -40,6 +40,7 @@ DOCUMENT_TYPES = tuple(document_type.value for document_type in DocumentType)
 AI_SEARCH_ON = "on-default"
 REALTIME_MODE_HANDELSREGISTER = "handelsregister-default"
 SEARCH_AI_MODE_ON = "on-default"
+SEARCH_ORGANIZATIONS_MAX_LIMIT = 30
 
 REALTIME_INCOMPATIBLE_FEATURES = frozenset(
     {

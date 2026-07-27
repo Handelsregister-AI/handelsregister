@@ -20,6 +20,7 @@ from .version import __version__
 from .constants import (
     DOCUMENT_TYPES,
     REALTIME_INCOMPATIBLE_FEATURES,
+    SEARCH_ORGANIZATIONS_MAX_LIMIT,
     normalize_features,
 )
 from .exceptions import (
@@ -506,7 +507,8 @@ class Handelsregister:
 
         :param q: Optional search query (min. 2 characters).
         :param skip: Pagination offset (default 0).
-        :param limit: Results per page (default 10, max 30).
+        :param limit: Results per page (default 10, max
+                      ``SEARCH_ORGANIZATIONS_MAX_LIMIT``).
         :param filters: Documented search filter mapping, including registration,
                         location, register, employee and financial range filters.
                         Objects exposing ``to_dict()`` are also accepted.
@@ -523,8 +525,13 @@ class Handelsregister:
                 q = None
         if q is None and not filter_data:
             raise ValueError("Either parameter 'q' or 'filters' is required.")
-        if limit is not None and (limit < 1 or limit > 30):
-            raise ValueError("Parameter 'limit' must be between 1 and 30.")
+        if limit is not None and (
+            limit < 1 or limit > SEARCH_ORGANIZATIONS_MAX_LIMIT
+        ):
+            raise ValueError(
+                "Parameter 'limit' must be between 1 and "
+                f"{SEARCH_ORGANIZATIONS_MAX_LIMIT}."
+            )
         if skip is not None and skip < 0:
             raise ValueError("Parameter 'skip' must be >= 0.")
 
@@ -558,6 +565,91 @@ class Handelsregister:
         if self.cache_enabled:
             self._cache[cache_key] = data
         return data
+
+    def iter_search_organizations(
+        self,
+        q: Optional[str] = None,
+        skip: int = 0,
+        page_size: int = SEARCH_ORGANIZATIONS_MAX_LIMIT,
+        max_results: Optional[int] = None,
+        filters: Optional[Union[Mapping[str, Any], Any]] = None,
+        ai_mode: Optional[str] = None,
+        **kwargs,
+    ) -> Iterable[Dict[str, Any]]:
+        """
+        Iterate over organization search results across API pages.
+
+        The search endpoint returns at most
+        ``SEARCH_ORGANIZATIONS_MAX_LIMIT`` results per request. This helper
+        advances ``skip`` automatically and sizes the final request so callers
+        can retrieve an exact maximum such as 100 without implementing their
+        own pagination loop.
+
+        Every fetched page is a separate, billable ``search-organizations``
+        request. Iteration is lazy, so requests stop when the caller stops
+        consuming results.
+
+        :param q: Optional search query (min. 2 characters).
+        :param skip: Initial pagination offset (default 0).
+        :param page_size: Results requested per API call (default/max 30).
+        :param max_results: Optional maximum number of results to yield.
+        :param filters: Search filter mapping or object exposing ``to_dict()``.
+        :param ai_mode: Pass ``"on-default"`` for AI-assisted search.
+        :param kwargs: Additional query parameters supported by the API.
+        :yield: Individual organization result dictionaries.
+        """
+        if page_size < 1 or page_size > SEARCH_ORGANIZATIONS_MAX_LIMIT:
+            raise ValueError(
+                "Parameter 'page_size' must be between 1 and "
+                f"{SEARCH_ORGANIZATIONS_MAX_LIMIT}."
+            )
+        if skip < 0:
+            raise ValueError("Parameter 'skip' must be >= 0.")
+        if max_results is not None and max_results < 0:
+            raise ValueError("Parameter 'max_results' must be >= 0.")
+        if max_results == 0:
+            return
+
+        next_skip = skip
+        yielded = 0
+
+        while max_results is None or yielded < max_results:
+            request_limit = page_size
+            if max_results is not None:
+                request_limit = min(request_limit, max_results - yielded)
+
+            page = self.search_organizations(
+                q=q,
+                skip=next_skip,
+                limit=request_limit,
+                filters=filters,
+                ai_mode=ai_mode,
+                **kwargs,
+            )
+            results = page.get("results") if isinstance(page, dict) else None
+            if not isinstance(results, list):
+                raise InvalidResponseError(
+                    "search-organizations response must contain a 'results' list."
+                )
+            if not results:
+                return
+
+            for result in results:
+                if not isinstance(result, dict):
+                    raise InvalidResponseError(
+                        "search-organizations results must be objects."
+                    )
+                yield result
+                yielded += 1
+                if max_results is not None and yielded >= max_results:
+                    return
+
+            next_skip += len(results)
+            total = page.get("total")
+            if isinstance(total, int) and next_skip >= total:
+                return
+            if len(results) < request_limit:
+                return
 
     @staticmethod
     def _prepare_search_filters(filters: Any) -> Dict[str, Any]:

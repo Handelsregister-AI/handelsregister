@@ -15,6 +15,7 @@ recursive-exclude *.egg-info *
 global-exclude *.egg
 exclude MANIFEST
 include LICENSE
+include CHANGELOG.md
 
 # -----------------------------------------------------------------------------
 # Unit test / coverage reports

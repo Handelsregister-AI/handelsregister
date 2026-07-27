@@ -3,7 +3,11 @@ import json
 from typing import List, Optional, Any
 
 from .client import Handelsregister
-from .constants import DOCUMENT_TYPES, ORGANIZATION_FEATURES
+from .constants import (
+    DOCUMENT_TYPES,
+    ORGANIZATION_FEATURES,
+    SEARCH_ORGANIZATIONS_MAX_LIMIT,
+)
 
 DEFAULT_FEATURES = [
     "related_persons",
@@ -318,8 +322,21 @@ def main():
 
     search_parser = subparsers.add_parser("search", help="Search organizations")
     search_parser.add_argument("query", nargs="*")
-    search_parser.add_argument("--skip", type=int, default=0)
-    search_parser.add_argument("--limit", type=int, default=10)
+    search_parser.add_argument(
+        "--skip",
+        type=int,
+        default=0,
+        help="Result offset for pagination (default: 0)",
+    )
+    search_parser.add_argument(
+        "--limit",
+        type=int,
+        default=10,
+        help=(
+            "Results per request "
+            f"(default: 10, maximum: {SEARCH_ORGANIZATIONS_MAX_LIMIT})"
+        ),
+    )
     search_parser.add_argument(
         "--postal-code",
         dest="postal_code",

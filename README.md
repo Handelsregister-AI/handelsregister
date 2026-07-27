@@ -178,6 +178,25 @@ for item in page["results"]:
     print(item["name"], item["registration"]["register_number"])
 ```
 
+The API returns at most **30 organizations per request**. Passing `limit=31`
+or higher raises `ValueError` instead of silently returning a truncated page.
+Use `skip` for manual pagination, or let the lazy iterator fetch successive
+pages:
+
+```python
+organizations = list(
+    client.iter_search_organizations(
+        q="tech",
+        page_size=30,
+        max_results=100,
+    )
+)
+```
+
+For 100 available matches this makes four requests with page sizes
+`30`, `30`, `30`, and `10`. Each page is a separate billable API request;
+stopping iteration early prevents subsequent pages from being fetched.
+
 `q` may be omitted when at least one filter is supplied. `filters` may also be
 an ordinary dictionary. Supported keys cover registration dates, legal forms,
 WZ/NACE industries, active status, postal code/city/state, radius search,
@@ -327,7 +346,7 @@ $ handelsregister person \
     --organization "Beispielwerk Analytics GmbH" \
     --feature shareholdings
 
-# Search
+# Search (maximum 30 results per request)
 $ handelsregister search "tech" --postal-code 80992 --limit 20
 
 # Filters-only search (JSON or repeated key=value)

@@ -9,6 +9,7 @@ from handelsregister import (
     Company,
     DocumentType,
     Handelsregister,
+    InvalidResponseError,
     InsufficientCreditsError,
     MergersAndAcquisitions,
     NotFoundError,
@@ -17,6 +18,7 @@ from handelsregister import (
     RateLimitError,
     RequestValidationError,
     RequestTimeoutError,
+    SEARCH_ORGANIZATIONS_MAX_LIMIT,
     SearchFilters,
     ServerError,
     SubscriptionRequiredError,
@@ -293,6 +295,7 @@ def test_filters_only_search_supports_all_shapes_and_nested_cache(mock_httpx):
 
 def test_search_and_realtime_validations():
     client = Handelsregister(api_key="test")
+    assert SEARCH_ORGANIZATIONS_MAX_LIMIT == 30
     with pytest.raises(ValueError, match="Either parameter"):
         client.search_organizations()
     with pytest.raises(ValueError, match="between 1 and 30"):
@@ -307,6 +310,93 @@ def test_search_and_realtime_validations():
             features=[OrganizationFeature.RELATED_PERSONS],
             realtime_mode="handelsregister-default",
         )
+
+
+def test_iter_search_organizations_fetches_100_in_four_pages(monkeypatch):
+    client = Handelsregister(api_key="test", cache_enabled=False)
+    calls = []
+
+    def fake_search(q=None, skip=0, limit=10, filters=None, ai_mode=None, **kwargs):
+        calls.append(
+            {
+                "q": q,
+                "skip": skip,
+                "limit": limit,
+                "filters": filters,
+                "ai_mode": ai_mode,
+                "kwargs": kwargs,
+            }
+        )
+        return {
+            "results": [
+                {"entity_id": f"organization-{index}"}
+                for index in range(skip, skip + limit)
+            ],
+            "total": 250,
+        }
+
+    monkeypatch.setattr(client, "search_organizations", fake_search)
+
+    results = list(
+        client.iter_search_organizations(
+            q="technology",
+            page_size=30,
+            max_results=100,
+            filters={"city": "München"},
+            ai_mode="on-default",
+            custom="value",
+        )
+    )
+
+    assert len(results) == 100
+    assert [call["skip"] for call in calls] == [0, 30, 60, 90]
+    assert [call["limit"] for call in calls] == [30, 30, 30, 10]
+    assert all(call["filters"] == {"city": "München"} for call in calls)
+    assert all(call["ai_mode"] == "on-default" for call in calls)
+    assert all(call["kwargs"] == {"custom": "value"} for call in calls)
+
+
+def test_iter_search_organizations_is_lazy_and_stops_at_total(monkeypatch):
+    client = Handelsregister(api_key="test", cache_enabled=False)
+    calls = []
+
+    def fake_search(q=None, skip=0, limit=10, **kwargs):
+        calls.append((skip, limit))
+        available = max(0, min(limit, 35 - skip))
+        return {
+            "results": [
+                {"entity_id": f"organization-{index}"}
+                for index in range(skip, skip + available)
+            ],
+            "total": 35,
+        }
+
+    monkeypatch.setattr(client, "search_organizations", fake_search)
+    iterator = client.iter_search_organizations(q="technology", page_size=30)
+
+    assert calls == []
+    assert len(list(iterator)) == 35
+    assert calls == [(0, 30), (30, 30)]
+
+
+def test_iter_search_organizations_validates_and_rejects_invalid_responses(
+    monkeypatch,
+):
+    client = Handelsregister(api_key="test", cache_enabled=False)
+
+    with pytest.raises(ValueError, match="page_size.*1 and 30"):
+        list(client.iter_search_organizations(q="valid", page_size=31))
+    with pytest.raises(ValueError, match="max_results"):
+        list(client.iter_search_organizations(q="valid", max_results=-1))
+    assert list(client.iter_search_organizations(q="valid", max_results=0)) == []
+
+    monkeypatch.setattr(
+        client,
+        "search_organizations",
+        lambda **kwargs: {"results": "not-a-list", "total": 1},
+    )
+    with pytest.raises(InvalidResponseError, match="'results' list"):
+        list(client.iter_search_organizations(q="valid"))
 
 
 @patch("handelsregister.client.httpx.Client")

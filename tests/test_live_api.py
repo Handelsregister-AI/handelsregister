@@ -28,6 +28,7 @@ from handelsregister import (
     Person,
     PersonShareholdings,
     RangeFilter,
+    SEARCH_ORGANIZATIONS_MAX_LIMIT,
     SearchFilters,
     ShareholderInfo,
     ShareholdingsInfo,
@@ -97,6 +98,14 @@ class TestSearchOrganizations:
         assert "results" in result
         assert isinstance(result["results"], list)
         assert len(result["results"]) > 0
+
+    def test_search_honors_30_result_page_maximum(self, live_client):
+        result = live_client.search_organizations(
+            q="GmbH",
+            limit=SEARCH_ORGANIZATIONS_MAX_LIMIT,
+        )
+        assert 0 < len(result["results"]) <= SEARCH_ORGANIZATIONS_MAX_LIMIT
+        assert result["total"] >= len(result["results"])
 
     def test_search_with_filters(self, live_client):
         # postal_code is the documented filter. The endpoint occasionally
