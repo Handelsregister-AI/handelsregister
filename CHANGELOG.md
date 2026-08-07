@@ -2,6 +2,11 @@
 
 All notable changes to the Python package are documented here.
 
+## 0.7.1 - 2026-08-07
+
+- Fix the AGPLv3 PyPI classifier so release uploads pass PyPI metadata
+  validation.
+
 ## 0.7.0 - 2026-08-07
 
 - **License change: the package is now distributed under the GNU Affero
