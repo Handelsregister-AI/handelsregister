@@ -1,35 +1,38 @@
-# 🔍 Handelsregister Python SDK
+# Handelsregister Python SDK
 
 [![PyPI version](https://img.shields.io/pypi/v/handelsregister.svg)](https://pypi.org/project/handelsregister/)
 [![Python Versions](https://img.shields.io/pypi/pyversions/handelsregister.svg)](https://pypi.org/project/handelsregister/)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![License: AGPL v3](https://img.shields.io/badge/License-AGPL_v3-blue.svg)](https://www.gnu.org/licenses/agpl-3.0)
 
 A modern Python client for the [Handelsregister.ai](https://handelsregister.ai) API. Structured, reliable, and fast access to the German commercial register (Handelsregister): company master data, financials, management, shareholders, UBOs, person profiles, and official PDF documents.
 
-## ✨ Features
+## Features
 
-- 🔎 **Company lookup** — `fetch-organization` with configurable feature flags
-- 👤 **Person profiles** — `fetch-person` (Handelsregister roles + web data)
-- 🗂️ **Search** — query or filters-only search with geo, registry, size, and financial filters
-- 📊 **Financial data** — KPIs, balance sheet, P&L, full annual reports (MD/HTML)
-- 👥 **Management** — current and past related persons with roles
-- 🤝 **Shareholders, UBOs, shareholdings** — who owns the company, who the company owns
-- 🔀 **Mergers & acquisitions** — transactions, succession, enterprise agreements, and control relationships
-- ✍️ **Representation schemes** — current and historical company- and person-role representation rules
-- 📰 **News, publications, insolvency publications**
-- 🌐 **Website content** — structured Markdown, optimized for LLMs
-- 📄 **Document downloads** — Gesellschafterliste, Gesellschaftsvertrag, AD/CD PDFs, and SI XML
-- 🔐 **Auth** — `x-api-key` header or Bearer token, plus token management
-- 📚 **Batch enrichment** — resilient CSV/JSON/XLSX enrichment with snapshots
-- ⚡ **Live mode** — opt-in realtime lookups against the Handelsregister
+- **Company lookup** — `fetch-organization` with configurable feature flags
+- **Person profiles** — `fetch-person` (Handelsregister roles + web data)
+- **Search** — query or filters-only search with geo, registry, size, and financial filters
+- **Signals** — cursor-paginated company changes with topic, company, and date filters
+- **Monitoring & webhooks** — per-company monitors with signed webhook push, endpoint lifecycle, and receiver-side signature verification
+- **Account** — profile, credits, usage, subscription, and API-key management
+- **Financial data** — KPIs, balance sheet, P&L, full annual reports (MD/HTML)
+- **Management** — current and past related persons with roles
+- **Shareholders, UBOs, shareholdings** — who owns the company, who the company owns
+- **Mergers & acquisitions** — transactions, succession, enterprise agreements, and control relationships
+- **Representation schemes** — current and historical company- and person-role representation rules
+- **News, publications, insolvency publications**
+- **Website content** — structured Markdown, optimized for LLMs
+- **Document downloads** — Gesellschafterliste, Gesellschaftsvertrag, AD/CD PDFs, and SI XML
+- **Auth** — `x-api-key` header or Bearer token, plus token management
+- **Batch enrichment** — resilient CSV/JSON/XLSX enrichment with snapshots
+- **Live mode** — opt-in realtime lookups against the Handelsregister
 
-## 📦 Installation
+## Installation
 
 ```bash
 pip install handelsregister
 ```
 
-## 🔑 Authentication
+## Authentication
 
 You can authenticate in two ways:
 
@@ -57,7 +60,33 @@ client = Handelsregister(bearer_token="your_token_here")
 
 When both are provided, the bearer token wins.
 
-## 🚀 Quick Start
+For gateways or proxies that require additional request headers, provide them
+explicitly. Managed authentication and User-Agent headers cannot be
+overridden:
+
+```python
+import os
+
+from handelsregister import Handelsregister
+
+client = Handelsregister(
+    api_key="your_api_key_here",
+    extra_headers={
+        "X-Gateway-Client-Id": os.environ["GATEWAY_CLIENT_ID"],
+        "X-Gateway-Client-Secret": os.environ["GATEWAY_CLIENT_SECRET"],
+    },
+)
+```
+
+Additional headers can also come from the environment:
+
+```bash
+export HANDELSREGISTER_EXTRA_HEADERS='{"X-Gateway-Client-Id": "...", "X-Gateway-Client-Secret": "..."}'
+```
+
+Explicit `extra_headers` always win over this variable.
+
+## Quick Start
 
 ### Company lookup
 
@@ -206,7 +235,386 @@ ranges, and revenue/net-income/EBIT ranges. Range dictionaries use
 The SDK automatically translates these documented flat financial keys to the
 live API's nested `financial_filters` wire format.
 
-## 📄 Document Downloads
+## Signals
+
+Signals expose company changes through seven stable topic codes. Catalog
+requests are free; successful list and detail requests cost 20 credits. Pages
+contain 20 signals and use opaque cursor pagination.
+
+### Signals endpoints
+
+| HTTP endpoint | Python method | Successful request cost |
+|---|---|---:|
+| `GET /api/v1/signals` | `list_signals()` | 20 credits per page |
+| `GET /api/v1/signals` | `iter_signals()` | 20 credits per fetched page |
+| `GET /api/v1/signals/catalog` | `get_signal_catalog()` | Free |
+| `GET /api/v1/signals/{signal_id}` | `get_signal()` | 20 credits |
+
+`list_signals()` accepts these arguments:
+
+| Python argument | Description |
+|---|---|
+| `cursor` | Opaque `pagination.next_cursor` value returned by the previous page |
+| `topics` | One topic, a comma-separated string, or an iterable of `SignalTopic`/string values |
+| `organization_ids` | One entity ID or an iterable of entity IDs |
+| `from_date` | Inclusive publication-date lower bound as an ISO 8601 string, `date`, or `datetime` |
+| `to_date` | Inclusive publication-date upper bound as an ISO 8601 string, `date`, or `datetime` |
+
+`iter_signals()` accepts the same filters and adds `max_results`. It requests
+the next page only when iteration reaches it.
+
+```python
+from handelsregister import Handelsregister, SignalTopic
+
+client = Handelsregister()
+
+page = client.list_signals(
+    topics=[
+        SignalTopic.CAPITAL_CHANGES,
+        SignalTopic.TRANSFORMATIONS,
+    ],
+    organization_ids=[
+        "0123456789abcdef0123456789abcdef",
+        "fedcba9876543210fedcba9876543210",
+    ],
+    from_date="2026-07-01",
+    to_date="2026-07-30",
+)
+
+for signal in page["signals"]:
+    print(signal["event"]["id"], signal["event"]["topic"])
+
+catalog = client.get_signal_catalog()
+if page["signals"]:
+    detail = client.get_signal(page["signals"][0]["event"]["id"])
+    print(detail["signal"]["event"]["topic"])
+```
+
+For manual cursor navigation, send the cursor unchanged and preserve the
+filters used for the first page:
+
+```python
+filters = {
+    "topics": [SignalTopic.NEW_REGISTRATIONS],
+    "from_date": "2026-07-01",
+    "to_date": "2026-07-30",
+}
+
+first_page = client.list_signals(**filters)
+next_cursor = first_page["pagination"].get("next_cursor")
+
+if next_cursor:
+    second_page = client.list_signals(cursor=next_cursor, **filters)
+```
+
+Multiple `organization_ids` use OR semantics: a returned Signal may belong to
+any supplied entity ID. The SDK sends the IDs as one comma-separated query
+value and preserves them while following cursors.
+
+The lazy iterator handles this automatically. Every fetched page is a separate
+billable request:
+
+```python
+for signal in client.iter_signals(
+    topics=[SignalTopic.NEW_REGISTRATIONS],
+    max_results=50,
+):
+    print(signal["organization"]["current_profile"]["name"])
+```
+
+### Signal topics
+
+The public topics are available as both `SignalTopic` and `SIGNAL_TOPICS`.
+
+| Code | Data covered | Plan requirement |
+|---|---|---|
+| `NEW_REGISTRATIONS` | Newly registered organizations | No additional topic gate |
+| `MASTER_DATA_CHANGES` | Name, registered seat, address, or register changes | No additional topic gate |
+| `CLOSURES` | Dissolution, liquidation, deletion, or expiration | No additional topic gate |
+| `ROLE_HOLDER_CHANGES` | Management, board, and procuration changes | No additional topic gate |
+| `CAPITAL_CHANGES` | Share, nominal, liable, or authorized capital changes | No additional topic gate |
+| `INSOLVENCIES` | Openings, protective measures, and completed proceedings | Pro |
+| `TRANSFORMATIONS` | Mergers, divisions, conversions, asset transfers, enterprise agreements, and squeeze-outs | Max |
+
+Requests below the required plan return HTTP 403 with
+`PLAN_REQUIRED` and cost zero credits. The SDK maps this response to
+`SubscriptionRequiredError`.
+
+### Signal response data
+
+Each list entry contains:
+
+- `event`: stable ID, topic, localized topic name, occurrence/publication dates,
+  and date basis. `ROLE_HOLDER_CHANGES` events additionally carry a `type`
+  (`ROLE_HOLDER_ENTRY` or `ROLE_HOLDER_EXIT`) with a localized `type_name`.
+- `organization`: entity ID and the current organization profile.
+- `parties`: topic-specific participants - for `ROLE_HOLDER_CHANGES` a
+  `role_holder` with the person/organization entity plus its role `code` and
+  `representation_scheme`.
+- `register_entry`: entry number/date, phase, description, context, and flags.
+- `source`: source kind.
+- `details`: topic-specific structured data identified by `details.schema`.
+
+Fields without a value are omitted rather than returned as `null`. A list
+response also includes `pagination`, applied `filters`, `warnings`, and `meta`.
+The pagination object reports the fixed limit, returned count, `has_more`, and
+the next opaque cursor. There is no total count.
+
+`get_signal()` returns the event inside a `signal` envelope:
+
+```python
+detail = client.get_signal("0123456789abcdef0123456789abcdef")
+signal = detail["signal"]
+request_cost = detail["meta"]["request_credit_cost"]
+```
+
+The catalog response contains the public topics and their descriptions,
+whether data has been observed for each topic, `catalog_version`, and server
+`capabilities`.
+
+## Monitoring & Webhooks
+
+Monitoring watches companies you select and pushes new normalized
+commercial-register changes to your HTTPS endpoints through signed webhooks.
+It shares the topic vocabulary with Signals but is an independent product;
+each webhook links to the Signals detail API for on-demand deep data.
+
+Reads are free. Monitor mutations work with an API key or a Bearer token
+carrying `account:read` plus `monitoring:manage`. Endpoint creation, secret
+rotation, enable/disable, and archive additionally require a Bearer token
+with `account:read` plus `account:keys`.
+
+### Setting up a receiver
+
+```python
+from handelsregister import Handelsregister
+
+client = Handelsregister(bearer_token="YOUR_ADMIN_TOKEN")
+
+# 1. Register the endpoint; store the one-time whsec_ secret immediately.
+created = client.create_webhook_endpoint(
+    name="Production receiver",
+    url="https://hooks.example.com/handelsregister",
+    headers={"x-tenant": "customer-42"},  # optional, write-only
+)
+endpoint_id = created["endpoint"]["id"]
+signing_secret = created["signing_secret"]  # shown exactly once
+
+# 2. Your receiver must echo data.challenge in a `webhook-verification`
+#    header with any 2xx status; then trigger the challenge. A successful
+#    first verification activates the endpoint immediately.
+result = client.verify_webhook_endpoint(endpoint_id)  # {"verified": true/false}
+
+# 3. Optionally send a signed test event. enable_webhook_endpoint() is only
+#    needed to reactivate an endpoint after a disable.
+client.test_webhook_endpoint(endpoint_id)
+```
+
+### Creating a monitor
+
+```python
+# Pricing is informational and useful for estimating the cycle cost.
+pricing = client.get_monitoring_pricing(poll_interval_days=7)
+
+created = client.create_monitor(
+    entity_id="cc78cf0b230aeae35c6df7ba31989bb9",
+    poll_interval_days=7,
+    endpoint_ids=[endpoint_id],
+    label="BMW AG",
+)
+monitor = created["monitor"]  # status: "initializing", baseline queued, 0 credits
+
+detail = client.get_monitor(monitor["id"])
+detail["billing_cycle"]                         # active cycle summary, or None
+detail["recent_runs"]                           # newest 20 poll runs
+client.update_monitor(monitor["id"], 14)          # prospective interval change
+client.pause_monitor(monitor["id"])
+client.resume_monitor(monitor["id"])
+client.archive_monitor(monitor["id"])           # archive, never hard-delete
+```
+
+The free all-topic baseline runs asynchronously and suppresses historical
+observations. It can complete within seconds, at which point activation
+charges a 10-credit cycle floor covering five complete successful checks in
+a rolling 30-day cycle; each further complete successful check costs
+2 credits (`max(10, 2 * checks)`). Failed, partial, superseded, or unfunded
+checks add no run charge, and pausing or archiving never refunds the floor —
+archive while still `initializing` to stop a monitor before activation.
+Every account receives the five core topics; `INSOLVENCIES` needs Pro or
+Max and `TRANSFORMATIONS` needs Max. Inaccessible observations are
+terminally suppressed, not replayed after an upgrade.
+
+### Verifying deliveries in your receiver
+
+Delivery is at-least-once with no ordering guarantee, so verify the exact
+raw request bytes and deduplicate on the message id:
+
+```python
+from handelsregister.webhooks import construct_event, verification_response_headers
+
+# e.g. in a Flask/FastAPI handler
+event = construct_event(raw_body_bytes, request_headers, signing_secret)
+
+if event["type"] == "endpoint.verification":
+    return Response(status=204, headers=verification_response_headers(event))
+
+if event["type"] == "organization.signal.detected":
+    signal = event["data"]["signal"]
+    link = event["data"]["links"]["signal"]  # Signals detail API (20 credits on success)
+```
+
+`construct_event()` checks the `v1,<base64>` HMAC-SHA256 signature over
+`webhook-id.webhook-timestamp.raw_body`, accepts the current and predecessor
+secret during the seven-day rotation grace (pass a list of secrets), and
+enforces a configurable timestamp tolerance. Samples always set
+`data.sample=true`; detected events never do. Respond with any 2xx quickly;
+3xx/4xx/5xx and timeouts are retried for roughly three days across ten
+attempts, HTTP 410 disables the endpoint immediately, and five consecutive
+exhausted deliveries disable it too.
+
+### Idempotency
+
+Every mutation requires an `Idempotency-Key`. The SDK generates a compliant
+key automatically and reuses it across its internal retries, so transient
+errors never double-charge or double-create. Pass `idempotency_key=` to make
+retries across process restarts safe as well: an exact retry within 24 hours
+replays the original response — including the same resource id — with
+`client.last_idempotency_status` set to `"replayed"` instead of
+`"created"`. Reusing a key with different parameters raises
+`IdempotencyConflictError`. Requests rejected by validation (HTTP 400/422)
+never claim their key, so the same key can be retried after fixing the
+request. Never re-drive an ambiguous 409 on a verify/test operation with a
+fresh key, because the API cannot prove whether your receiver saw the
+ambiguous request.
+
+### Delivery history
+
+```python
+client.list_webhook_endpoints()                  # all non-archived endpoints (max 10)
+client.list_webhook_deliveries(endpoint_id)      # newest 50 delivery summaries
+client.retry_webhook_delivery("del_...")         # re-drive a retained failed delivery
+client.list_webhook_events()                     # newest 50 event summaries
+client.rotate_webhook_endpoint_secret(endpoint_id)  # new one-time whsec_ secret
+client.disable_webhook_endpoint(endpoint_id)
+client.archive_webhook_endpoint(endpoint_id)
+```
+
+Event payloads are retained encrypted for 30 days, delivery attempt audit
+rows for 90 days.
+
+## Account and Usage
+
+Account endpoints are read-only except for API-key creation and revocation.
+Every Account request costs zero credits.
+
+### Account endpoints
+
+| HTTP endpoint | Python method | Authentication |
+|---|---|---|
+| `GET /api/v1/account` | `get_account()` | API key or `account:read` Bearer token |
+| `GET /api/v1/account/credits` | `get_account_credits()` | API key or `account:read` Bearer token |
+| `GET /api/v1/account/usage` | `get_account_usage()` | API key or `account:read` Bearer token |
+| `GET /api/v1/account/usage/transactions` | `get_account_usage_transactions()` | API key or `account:read` Bearer token |
+| `GET /api/v1/account/subscription` | `get_account_subscription()` | API key or `account:read` Bearer token |
+| `GET /api/v1/account/api-keys` | `list_api_keys()` | API key or `account:read` Bearer token |
+| `POST /api/v1/account/api-keys` | `create_api_key()` | Bearer token with `account:keys` |
+| `DELETE /api/v1/account/api-keys/{id}` | `revoke_api_key()` | Bearer token with `account:keys` |
+
+```python
+from handelsregister import Handelsregister
+
+client = Handelsregister()
+
+profile = client.get_account()
+credits = client.get_account_credits()
+subscription = client.get_account_subscription()
+keys = client.list_api_keys()  # masked values only
+
+usage = client.get_account_usage(
+    from_date="2026-07-01",
+    to_date="2026-07-30",
+    group_by="day",
+)
+
+transactions = client.get_account_usage_transactions(
+    endpoint="/api/v1/signals",
+    per_page=25,
+)
+```
+
+`get_account_usage()` and `get_account_usage_transactions()` accept:
+
+| Python argument | Applies to | Description |
+|---|---|---|
+| `from_date` / `to_date` | Both | ISO 8601 string, `date`, or `datetime`; defaults to the current month; maximum range is 366 days |
+| `group_by` | Usage | `"day"` or `"month"`; the server chooses a default based on range length |
+| `endpoint` | Transactions | Exact endpoint filter, for example `/api/v1/signals` |
+| `per_page` | Transactions | Page size from 1 to 100; default is 25 |
+| `cursor` | Transactions | Opaque cursor returned in `pagination.next_cursor` |
+
+A date-only `to_date` includes that entire day. Transactions can also be
+consumed across all cursor pages:
+
+```python
+for transaction in client.iter_account_usage_transactions(per_page=100):
+    print(transaction["endpoint"], transaction["credits"])
+```
+
+Account responses provide:
+
+- Profile data: name, email, language, and current plan.
+- Credits: remaining balance, bookings, and the next expiration date.
+- Usage: selected period, request/credit totals, endpoint breakdown, and daily
+  or monthly time-series buckets.
+- Transactions: individual billed requests plus cursor pagination.
+- Subscription: plan, status, billing period, and included features.
+- API keys: active keys in masked form, creation time, and last usage time.
+
+Creating or revoking an API key requires a Bearer token with the
+`account:keys` ability. The full key is returned only by the creation response:
+
+```python
+import os
+
+from handelsregister import Handelsregister
+
+admin = Handelsregister(
+    bearer_token=os.environ["HANDELSREGISTER_ADMIN_BEARER_TOKEN"],
+)
+created = admin.create_api_key()
+
+try:
+    new_key = created["api_key"]["key"]
+finally:
+    admin.revoke_api_key(created["api_key"]["id"])
+```
+
+### End-to-end Account and Signals demo
+
+The repository includes a runnable script that pretty-prints the live
+responses while redacting credentials:
+
+```bash
+# Account reads are free. Signals catalog + list + detail cost up to 40 credits.
+python examples/account_signals_demo.py
+
+# Account only (free)
+python examples/account_signals_demo.py --account
+
+# Signals only, without the 20-credit detail call
+python examples/account_signals_demo.py --signals --skip-detail
+```
+
+For a temporary API-key create/verify/revoke round trip, set
+`HANDELSREGISTER_ADMIN_BEARER_TOKEN` and run:
+
+```bash
+python examples/account_signals_demo.py \
+  --account \
+  --admin-key-roundtrip
+```
+
+## Document Downloads
 
 ```python
 from handelsregister import Handelsregister, Company
@@ -265,28 +673,41 @@ company.fetch_document(
 | `CD`                       | Chronologische Daten (historical excerpt)          |
 | `SI`                       | Strukturierter Inhalt (XML)                        |
 
-## 🔐 Bearer Token Management
+## Bearer Token Management
 
 If you prefer managing bearer tokens over sharing an API key:
 
 ```python
 client = Handelsregister(api_key="your_api_key_here")
 
-# Create a new token
+# Create a new token. expires_at must lie in the future; omit it for a
+# non-expiring token.
 created = client.create_token(
     token_name="My Application",
-    abilities=["*"],
-    expires_at="2026-01-01 00:00:00",
+    abilities=["account:read", "monitoring:manage"],
+    expires_at="2027-01-01 00:00:00",
 )
-print(created)
+created["token"]      # the bearer token value - shown exactly once
+created["abilities"]  # abilities actually granted
 
-# List / revoke
+# List tokens; the create response has no id, so look it up here.
 tokens = client.list_tokens()
-client.revoke_token(token_id=42)
+token_id = next(
+    t["id"] for t in tokens["tokens"] if t["name"] == "My Application"
+)
+client.revoke_token(token_id=token_id)
+
+# Revokes every bearer token of the account - use deliberately.
 client.revoke_all_tokens()
 ```
 
-## 📊 Data Enrichment
+Ability notes: passing `["*"]` does not grant a wildcard - the server
+replaces it with the defaults `api:data` and `account:read`. Request
+additional abilities such as `monitoring:manage` explicitly. `account:keys`
+cannot be self-granted through this endpoint; tokens for webhook-endpoint
+administration must be created in the dashboard.
+
+## Data Enrichment
 
 Enrich a CSV/JSON/XLSX file of companies with Handelsregister data. Intermediate snapshots let you resume long-running jobs.
 
@@ -307,9 +728,13 @@ client.enrich(
         "features": ["related_persons", "financial_kpi", "ubos"],
         "ai_search": "on-default",
     },
-    output_format="csv",
+    output_file="companies_enriched.csv",
+    output_type="csv",
 )
 ```
+
+Each output row keeps the input columns and adds the API response under
+`_handelsregister_result` plus a `_in_file` marker.
 
 There is also a DataFrame convenience:
 
@@ -326,7 +751,7 @@ enriched = client.enrich_dataframe(
 )
 ```
 
-## 🖥️ Command Line Interface
+## Command Line Interface
 
 Installing the package exposes the `handelsregister` CLI. If the optional `rich` dependency is installed, commands render colorful tables.
 
@@ -370,9 +795,25 @@ $ handelsregister document "KONUX GmbH München" \
 
 $ handelsregister document "KONUX GmbH München" \
     --type SI --output konux_structured.xml
+
+# Monitoring
+$ handelsregister monitors pricing --interval 7
+$ handelsregister monitors list
+$ handelsregister monitors create --entity-id cc78cf0b230aeae35c6df7ba31989bb9 \
+    --interval 7 --endpoint wep_01hzy2q6j3g5m8v9x0abcde123 \
+    --label "BMW AG"
+$ handelsregister monitors show mon_01hzy2q6j3g5m8v9x0abcde123
+$ handelsregister monitors pause mon_01hzy2q6j3g5m8v9x0abcde123
+
+# Webhook endpoints, deliveries, events
+$ handelsregister webhooks create --name "Production receiver" \
+    --url https://hooks.example.com/handelsregister --header x-tenant=customer-42
+$ handelsregister webhooks verify wep_01hzy2q6j3g5m8v9x0abcde123
+$ handelsregister webhooks deliveries --endpoint wep_01hzy2q6j3g5m8v9x0abcde123
+$ handelsregister webhooks events
 ```
 
-## 📋 Available Features (`fetch-organization`)
+## Available Features (`fetch-organization`)
 
 | Feature Flag                         | Description                                                   |
 |--------------------------------------|---------------------------------------------------------------|
@@ -400,7 +841,7 @@ The base response includes `representation_scheme`. Entries in
 applicable rules as `latest`; the SDK normalizes `current` and `latest` through
 the `.active` property.
 
-## 🔍 `Company` properties
+## `Company` properties
 
 ```python
 # Basic
@@ -455,7 +896,7 @@ company.news
 company.website_content
 ```
 
-## 👤 `Person` properties
+## `Person` properties
 
 ```python
 person.entity_id
@@ -489,13 +930,27 @@ person.shareholdings           # PersonShareholdings (requires feature flag)
 All API exceptions inherit from `HandelsregisterError`. Documented HTTP
 responses are mapped to `RequestValidationError` (HTTP 400/422), `AuthenticationError`,
 `InsufficientCreditsError`, `ForbiddenError` /
-`SubscriptionRequiredError`, `NotFoundError`, `RateLimitError`, and
-`RequestTimeoutError` / `ServerError`. API exceptions preserve `status_code`, the raw JSON `payload`,
-and billing metadata through `.meta`.
+`SubscriptionRequiredError`, `NotFoundError`, `ConflictError` /
+`IdempotencyConflictError` (HTTP 409), `IdempotencyKeyRequiredError`
+(HTTP 428), `RateLimitError`, and `RequestTimeoutError` / `ServerError` /
+`ServiceUnavailableError` (503 kill switch). Receiver-side signature
+failures raise `WebhookSignatureError`. API exceptions preserve
+`status_code`, the raw JSON `payload`, and billing metadata through `.meta`.
 
 Only network failures, HTTP 408/429, and server errors are retried. When supplied,
-the API's `Retry-After` header controls the delay.
+the API's `Retry-After` header controls the delay. Monitoring mutations retry
+with the same idempotency key; HTTP 409 is never retried, and endpoint
+verify/test retry only the pre-operation 503 kill switch and HTTP 429
+because other failures are ambiguous once the receiver may have been
+contacted.
 
-## 📜 License
+## Security
 
-MIT — see [LICENSE](LICENSE).
+Do not commit API keys or Bearer tokens. Load credentials from environment
+variables or a secret manager, and revoke any credential that may have been
+exposed. Report vulnerabilities privately as described in
+[SECURITY.md](SECURITY.md).
+
+## License
+
+GNU Affero General Public License v3.0 — see [LICENSE](LICENSE).

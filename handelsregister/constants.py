@@ -33,9 +33,70 @@ class DocumentType(str, Enum):
     STRUCTURED_INFORMATION = "SI"
 
 
+class SignalTopic(str, Enum):
+    NEW_REGISTRATIONS = "NEW_REGISTRATIONS"
+    MASTER_DATA_CHANGES = "MASTER_DATA_CHANGES"
+    CLOSURES = "CLOSURES"
+    ROLE_HOLDER_CHANGES = "ROLE_HOLDER_CHANGES"
+    CAPITAL_CHANGES = "CAPITAL_CHANGES"
+    INSOLVENCIES = "INSOLVENCIES"
+    TRANSFORMATIONS = "TRANSFORMATIONS"
+
+
+class MonitorStatus(str, Enum):
+    INITIALIZING = "initializing"
+    ACTIVE = "active"
+    PAUSED_USER = "paused_user"
+    PAUSED_CONFIGURATION = "paused_configuration"
+    PAUSED_ENTITLEMENT = "paused_entitlement"
+    PAUSED_BILLING = "paused_billing"
+    ERROR = "error"
+    ARCHIVED = "archived"
+
+
+class WebhookEndpointStatus(str, Enum):
+    PENDING_VERIFICATION = "pending_verification"
+    ACTIVE = "active"
+    DISABLED_USER = "disabled_user"
+    DISABLED_FAILURES = "disabled_failures"
+    ARCHIVED = "archived"
+
+
+class WebhookDeliveryStatus(str, Enum):
+    WITHHELD = "withheld"
+    PENDING = "pending"
+    IN_FLIGHT = "in_flight"
+    RETRY_WAIT = "retry_wait"
+    SUCCEEDED = "succeeded"
+    BLOCKED_ENDPOINT = "blocked_endpoint"
+    EXHAUSTED = "exhausted"
+    CANCELLED = "cancelled"
+
+
+class WebhookEventType(str, Enum):
+    SIGNAL_DETECTED = "organization.signal.detected"
+    SIGNAL_SAMPLE = "organization.signal.sample"
+    ENDPOINT_TEST = "endpoint.test"
+    ENDPOINT_VERIFICATION = "endpoint.verification"
+
+
 ORGANIZATION_FEATURES = tuple(feature.value for feature in OrganizationFeature)
 PERSON_FEATURES = tuple(feature.value for feature in PersonFeature)
 DOCUMENT_TYPES = tuple(document_type.value for document_type in DocumentType)
+SIGNAL_TOPICS = tuple(topic.value for topic in SignalTopic)
+MONITOR_STATUSES = tuple(status.value for status in MonitorStatus)
+WEBHOOK_ENDPOINT_STATUSES = tuple(status.value for status in WebhookEndpointStatus)
+WEBHOOK_DELIVERY_STATUSES = tuple(status.value for status in WebhookDeliveryStatus)
+WEBHOOK_EVENT_TYPES = tuple(event_type.value for event_type in WebhookEventType)
+
+# Bearer token abilities used by the account/monitoring routes.
+ABILITY_ACCOUNT_READ = "account:read"
+ABILITY_MONITORING_MANAGE = "monitoring:manage"
+ABILITY_ACCOUNT_KEYS = "account:keys"
+
+MONITOR_MIN_POLL_INTERVAL_DAYS = 1
+MONITOR_MAX_POLL_INTERVAL_DAYS = 30
+WEBHOOK_MAX_ENDPOINTS = 10
 
 AI_SEARCH_ON = "on-default"
 REALTIME_MODE_HANDELSREGISTER = "handelsregister-default"

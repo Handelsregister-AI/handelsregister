@@ -3,13 +3,16 @@ import json
 import time
 import logging
 import hashlib
+import re
+import uuid
 import httpx
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from email.utils import parsedate_to_datetime
 from enum import Enum
-from typing import List, Optional, Dict, Any, Union, Iterable, Mapping
+from typing import List, Optional, Dict, Any, Union, Iterable, Iterator, Mapping
 from pathlib import Path
 from glob import glob
+from urllib.parse import quote
 
 try:
     from tqdm import tqdm
@@ -21,13 +24,17 @@ from .constants import (
     DOCUMENT_TYPES,
     REALTIME_INCOMPATIBLE_FEATURES,
     SEARCH_ORGANIZATIONS_MAX_LIMIT,
+    SIGNAL_TOPICS,
     normalize_features,
 )
 from .exceptions import (
     APIError,
     AuthenticationError,
+    ConflictError,
     ForbiddenError,
     HandelsregisterError,
+    IdempotencyConflictError,
+    IdempotencyKeyRequiredError,
     InsufficientCreditsError,
     InvalidResponseError,
     NotFoundError,
@@ -35,12 +42,19 @@ from .exceptions import (
     RequestTimeoutError,
     RequestValidationError,
     ServerError,
+    ServiceUnavailableError,
     SubscriptionRequiredError,
 )
 
 logger = logging.getLogger(__name__)
 
 BASE_URL = "https://handelsregister.ai/api/v1/"
+_HTTP_HEADER_NAME = re.compile(r"^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$")
+_IDEMPOTENCY_KEY_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
+_MONITOR_ID_PATTERN = re.compile(r"^mon_[a-z0-9]{26}$")
+_WEBHOOK_ENDPOINT_ID_PATTERN = re.compile(r"^wep_[a-z0-9]{26}$")
+_WEBHOOK_DELIVERY_ID_PATTERN = re.compile(r"^del_[a-z0-9]{26}$")
+_MONITOR_ENTITY_ID_PATTERN = re.compile(r"^[A-Za-z0-9._~-]{1,128}$")
 
 
 class Handelsregister:
@@ -71,6 +85,7 @@ class Handelsregister:
         base_url: str = BASE_URL,
         cache_enabled: bool = True,
         rate_limit: float = 0.0,
+        extra_headers: Optional[Mapping[str, str]] = None,
     ) -> None:
         """
         Initialize the Handelsregister client.
@@ -84,6 +99,11 @@ class Handelsregister:
         :param base_url: Base URL for the handelsregister.ai API.
         :param cache_enabled: Whether to cache identical requests in-memory.
         :param rate_limit: Minimum seconds between consecutive requests.
+        :param extra_headers: Optional additional request headers for custom
+                              gateways or proxies. Authentication and
+                              User-Agent headers cannot be overridden.
+                              Falls back to the ``HANDELSREGISTER_EXTRA_HEADERS``
+                              env var (a JSON object) if not given.
         """
         env_api_key = os.getenv("HANDELSREGISTER_API_KEY", "")
         env_bearer = os.getenv("HANDELSREGISTER_BEARER_TOKEN", "")
@@ -92,6 +112,24 @@ class Handelsregister:
             bearer_token = env_bearer
         if not api_key:
             api_key = env_api_key
+
+        if base_url == BASE_URL:
+            base_url = os.getenv("HANDELSREGISTER_BASE_URL") or base_url
+        if extra_headers is None:
+            env_extra_headers = os.getenv("HANDELSREGISTER_EXTRA_HEADERS", "")
+            if env_extra_headers:
+                try:
+                    extra_headers = json.loads(env_extra_headers)
+                except ValueError as exc:
+                    raise ValueError(
+                        "Environment variable 'HANDELSREGISTER_EXTRA_HEADERS' "
+                        "must contain a JSON object."
+                    ) from exc
+                if not isinstance(extra_headers, dict):
+                    raise ValueError(
+                        "Environment variable 'HANDELSREGISTER_EXTRA_HEADERS' "
+                        "must contain a JSON object."
+                    )
 
         if not api_key and not bearer_token:
             raise AuthenticationError(
@@ -112,12 +150,48 @@ class Handelsregister:
         elif self.api_key:
             self.headers["x-api-key"] = self.api_key
 
+        self.extra_headers: Dict[str, str] = {}
+        if extra_headers is not None:
+            if not isinstance(extra_headers, Mapping):
+                raise ValueError("Parameter 'extra_headers' must be a mapping.")
+            reserved_headers = {"authorization", "x-api-key", "user-agent"}
+            for key, value in extra_headers.items():
+                if not isinstance(key, str):
+                    raise ValueError("Extra header names must be strings.")
+                normalized_key = key.strip()
+                if not normalized_key or not _HTTP_HEADER_NAME.fullmatch(
+                    normalized_key
+                ):
+                    raise ValueError(
+                        "Extra header names must use valid HTTP token characters."
+                    )
+                if normalized_key.lower() in reserved_headers:
+                    raise ValueError(
+                        f"Header '{normalized_key}' is managed by the SDK and "
+                        "cannot be supplied through extra_headers."
+                    )
+                if (
+                    not isinstance(value, str)
+                    or not value
+                    or "\r" in value
+                    or "\n" in value
+                ):
+                    raise ValueError(
+                        f"Extra header '{normalized_key}' must have a non-empty "
+                        "single-line string value."
+                    )
+                self.extra_headers[normalized_key] = value
+            self.headers.update(self.extra_headers)
+
         self.cache_enabled = cache_enabled
         self.rate_limit = rate_limit
         self._cache: Dict[tuple, Any] = {}
         self._last_request_time = 0.0
+        #: ``Idempotency-Status`` header of the most recent monitoring
+        #: mutation: ``"created"``, ``"replayed"`` or ``None``.
+        self.last_idempotency_status: Optional[str] = None
 
-        logger.debug("Handelsregister client initialized with base_url=%s", self.base_url)
+        logger.debug("Handelsregister client initialized")
 
     # -------------------------------------------------------------------
     # Core request helpers
@@ -128,6 +202,18 @@ class Handelsregister:
             elapsed = time.time() - self._last_request_time
             if elapsed < self.rate_limit:
                 time.sleep(self.rate_limit - elapsed)
+
+    def _json_headers(self) -> Dict[str, str]:
+        """
+        Request headers for JSON endpoints.
+
+        ``Accept: application/json`` makes the API answer validation
+        failures with 422 Problem JSON instead of a 302 redirect intended
+        for browsers.
+        """
+        headers = dict(self.headers)
+        headers.setdefault("Accept", "application/json")
+        return headers
 
     @staticmethod
     def _response_payload(response: httpx.Response) -> Any:
@@ -142,6 +228,11 @@ class Handelsregister:
             error = payload.get("error")
             if isinstance(error, str) and error:
                 return error
+            if isinstance(error, dict):
+                for key in ("message", "detail", "title", "code"):
+                    value = error.get(key)
+                    if isinstance(value, str) and value:
+                        return value
             meta = payload.get("meta")
             if isinstance(meta, dict) and isinstance(meta.get("message"), str):
                 return meta["message"]
@@ -156,7 +247,26 @@ class Handelsregister:
                 ]
                 if messages:
                     return "; ".join(messages)
+            for key in ("message", "title", "code"):
+                value = payload.get(key)
+                if isinstance(value, str) and value:
+                    return value
         return f"handelsregister.ai API request failed with HTTP {status_code}"
+
+    @staticmethod
+    def _error_code(payload: Any) -> str:
+        if not isinstance(payload, dict):
+            return ""
+        error = payload.get("error")
+        candidates = [
+            payload.get("code"),
+            payload.get("error_code"),
+            error.get("code") if isinstance(error, dict) else error,
+        ]
+        for candidate in candidates:
+            if isinstance(candidate, str) and candidate:
+                return candidate.upper()
+        return ""
 
     @staticmethod
     def _headers_dict(response: httpx.Response) -> Dict[str, str]:
@@ -182,17 +292,36 @@ class Handelsregister:
         if status_code == 402:
             raise InsufficientCreditsError(message, **kwargs)
         if status_code == 403:
-            if isinstance(payload, dict) and payload.get("error") == "subscription_required":
+            if self._error_code(payload) in {
+                "PLAN_REQUIRED",
+                "SUBSCRIPTION_REQUIRED",
+            }:
                 raise SubscriptionRequiredError(message, **kwargs)
             raise ForbiddenError(message, **kwargs)
         if status_code == 404:
             raise NotFoundError(message, **kwargs)
         if status_code == 408:
             raise RequestTimeoutError(message, **kwargs)
+        if status_code == 409:
+            if self._error_code(payload).startswith("IDEMPOTENCY"):
+                raise IdempotencyConflictError(message, **kwargs)
+            raise ConflictError(message, **kwargs)
+        if status_code == 428:
+            raise IdempotencyKeyRequiredError(message, **kwargs)
         if status_code == 429:
             raise RateLimitError(message, **kwargs)
+        if status_code == 503 and self._error_code(payload) == "TEMPORARILY_UNAVAILABLE":
+            raise ServiceUnavailableError(message, **kwargs)
         if status_code >= 500:
             raise ServerError(message, **kwargs)
+        if 300 <= status_code < 400:
+            location = kwargs["response_headers"].get("location", "")
+            raise APIError(
+                f"Unexpected HTTP {status_code} redirect"
+                + (f" to {location}" if location else "")
+                + "; the API returned a browser response instead of JSON.",
+                **kwargs,
+            )
         raise APIError(message, **kwargs)
 
     @staticmethod
@@ -225,7 +354,7 @@ class Handelsregister:
     def _request(
         self,
         path: str,
-        params: Dict[str, Any],
+        params: Optional[Dict[str, Any]] = None,
         max_retries: int = 3,
         expect_json: bool = True,
     ) -> Any:
@@ -240,14 +369,19 @@ class Handelsregister:
                  ``expect_json`` is False.
         """
         url = f"{self.base_url}/{path.lstrip('/')}"
+        headers = self._json_headers() if expect_json else self.headers
 
         self._respect_rate_limit()
 
         for attempt in range(max_retries):
             try:
                 with httpx.Client(timeout=self.timeout) as client:
-                    logger.debug("Making GET request to %s with params=%s", url, params)
-                    response = client.get(url, headers=self.headers, params=params)
+                    logger.debug(
+                        "Making GET request to path=%s with query parameters=%s",
+                        path,
+                        sorted((params or {}).keys()),
+                    )
+                    response = client.get(url, headers=headers, params=params or {})
                     try:
                         response.raise_for_status()
                     except httpx.HTTPStatusError as exc:
@@ -296,7 +430,9 @@ class Handelsregister:
         for attempt in range(max_retries):
             try:
                 with httpx.Client(timeout=self.timeout) as client:
-                    response = client.post(url, headers=self.headers, json=json_body or {})
+                    response = client.post(
+                        url, headers=self._json_headers(), json=json_body or {}
+                    )
                     try:
                         response.raise_for_status()
                     except httpx.HTTPStatusError as exc:
@@ -330,7 +466,7 @@ class Handelsregister:
         for attempt in range(max_retries):
             try:
                 with httpx.Client(timeout=self.timeout) as client:
-                    response = client.delete(url, headers=self.headers)
+                    response = client.delete(url, headers=self._json_headers())
                     try:
                         response.raise_for_status()
                     except httpx.HTTPStatusError as exc:
@@ -353,6 +489,146 @@ class Handelsregister:
                 time.sleep(self._retry_delay(None, attempt))
             except ValueError as exc:
                 raise InvalidResponseError(f"Received non-JSON response: {exc}") from exc
+
+    # -------------------------------------------------------------------
+    # Idempotent mutations (monitoring & webhooks)
+    # -------------------------------------------------------------------
+
+    @staticmethod
+    def _idempotency_key(idempotency_key: Optional[str]) -> str:
+        """Validate a caller-supplied Idempotency-Key or generate a fresh one."""
+        if idempotency_key is None:
+            return f"sdk-py-{uuid.uuid4().hex}"
+        if not isinstance(idempotency_key, str) or not _IDEMPOTENCY_KEY_PATTERN.fullmatch(
+            idempotency_key
+        ):
+            raise ValueError(
+                "Parameter 'idempotency_key' must be 1-128 ASCII characters "
+                "matching [A-Za-z0-9._:-] and start with an alphanumeric "
+                "character."
+            )
+        return idempotency_key
+
+    def _mutate(
+        self,
+        method: str,
+        path: str,
+        json_body: Optional[Dict[str, Any]] = None,
+        idempotency_key: Optional[str] = None,
+        max_retries: int = 3,
+        network_io: bool = False,
+        verified_result_on_422: bool = False,
+    ) -> Any:
+        """
+        Send an idempotent mutation (POST/PATCH/DELETE) with an
+        ``Idempotency-Key`` header, retrying safely on transient errors.
+
+        Retries always reuse the same idempotency key, so the durable
+        server-side ledger replays the original result instead of repeating
+        the effect. HTTP 409 is never retried: for plain database mutations
+        it signals a parameter conflict, for endpoint verify/test it can
+        signal an ambiguity the client must not re-drive.
+
+        :param network_io: True for operations that contact the customer's
+                           webhook receiver (verify/test). For those, only
+                           HTTP 429 and the pre-operation 503 kill switch are
+                           retried; other 5xx responses are ambiguous and
+                           surface immediately.
+        :param verified_result_on_422: Return the payload instead of raising
+                                       when a 422 body carries a ``verified``
+                                       key (endpoint verification failure is
+                                       a normal domain outcome).
+        """
+        key = self._idempotency_key(idempotency_key)
+        url = f"{self.base_url}/{path.lstrip('/')}"
+        headers = self._json_headers()
+        headers["Idempotency-Key"] = key
+        self.last_idempotency_status = None
+        self._respect_rate_limit()
+
+        for attempt in range(max_retries):
+            try:
+                with httpx.Client(timeout=self.timeout) as client:
+                    logger.debug(
+                        "Making idempotent %s request to path=%s",
+                        method,
+                        path,
+                    )
+                    response = client.request(
+                        method,
+                        url,
+                        headers=headers,
+                        json=json_body,
+                    )
+                    try:
+                        response.raise_for_status()
+                    except httpx.HTTPStatusError as exc:
+                        error_response = exc.response
+                        status_code = int(error_response.status_code)
+                        if (
+                            verified_result_on_422
+                            and status_code == 422
+                        ):
+                            payload = self._response_payload(error_response)
+                            if isinstance(payload, dict) and "verified" in payload:
+                                self._last_request_time = time.time()
+                                self._store_idempotency_status(error_response)
+                                return payload
+                        if (
+                            self._is_retryable_mutation_status(
+                                status_code, error_response, network_io
+                            )
+                            and attempt < max_retries - 1
+                        ):
+                            delay = self._retry_delay(error_response, attempt)
+                            logger.warning(
+                                "Retryable HTTP %d (attempt %d/%d); retrying in %.1fs",
+                                status_code,
+                                attempt + 1,
+                                max_retries,
+                                delay,
+                            )
+                            time.sleep(delay)
+                            continue
+                        self._raise_api_error(error_response)
+                    self._last_request_time = time.time()
+                    self._store_idempotency_status(response)
+                    if not response.content:
+                        return {}
+                    return response.json()
+            except httpx.RequestError as exc:
+                logger.warning(
+                    "Request error (attempt %d/%d): %s", attempt + 1, max_retries, exc
+                )
+                if attempt == max_retries - 1:
+                    raise HandelsregisterError(f"Error while requesting data: {exc}") from exc
+                time.sleep(self._retry_delay(None, attempt))
+            except ValueError as exc:
+                raise InvalidResponseError(f"Received non-JSON response: {exc}") from exc
+
+    def _is_retryable_mutation_status(
+        self,
+        status_code: int,
+        response: httpx.Response,
+        network_io: bool,
+    ) -> bool:
+        if status_code == 409:
+            return False
+        if network_io:
+            if status_code == 429:
+                return True
+            if status_code == 503:
+                payload = self._response_payload(response)
+                return self._error_code(payload) == "TEMPORARILY_UNAVAILABLE"
+            return False
+        return self._is_retryable_status(status_code)
+
+    def _store_idempotency_status(self, response: httpx.Response) -> None:
+        try:
+            status = response.headers.get("idempotency-status")
+        except (AttributeError, TypeError):
+            status = None
+        self.last_idempotency_status = status if isinstance(status, str) and status else None
 
     # -------------------------------------------------------------------
     # Public endpoints
@@ -799,6 +1075,777 @@ class Handelsregister:
                 f.write(document_content)
             logger.info("Document saved to %s", output_file)
         return document_content
+
+    # -------------------------------------------------------------------
+    # Account and usage
+    # -------------------------------------------------------------------
+
+    @staticmethod
+    def _date_query_value(
+        value: Optional[Union[str, date, datetime]],
+        parameter_name: str,
+    ) -> Optional[str]:
+        if value is None:
+            return None
+        if isinstance(value, datetime):
+            return value.isoformat()
+        if isinstance(value, date):
+            return value.isoformat()
+        if isinstance(value, str):
+            normalized = value.strip()
+            if normalized:
+                return normalized
+        raise ValueError(
+            f"Parameter '{parameter_name}' must be a non-empty ISO 8601 "
+            "string, date, or datetime."
+        )
+
+    @staticmethod
+    def _csv_query_value(
+        values: Optional[Union[str, Enum, Iterable[Union[str, Enum]]]],
+        parameter_name: str,
+    ) -> Optional[str]:
+        if values is None:
+            return None
+        if isinstance(values, str):
+            raw_values: Iterable[Union[str, Enum]] = values.split(",")
+        elif isinstance(values, Enum):
+            raw_values = [values]
+        else:
+            raw_values = values
+
+        normalized: List[str] = []
+        seen = set()
+        for item in raw_values:
+            value = item.value if isinstance(item, Enum) else str(item)
+            value = value.strip()
+            if value and value not in seen:
+                normalized.append(value)
+                seen.add(value)
+        if not normalized:
+            raise ValueError(f"Parameter '{parameter_name}' must not be empty.")
+        return ",".join(normalized)
+
+    def get_account(self) -> Dict[str, Any]:
+        """Return the authenticated account's profile and current plan."""
+        return self._request("account")
+
+    def get_account_credits(self) -> Dict[str, Any]:
+        """Return the account's credit balance and credit bookings."""
+        return self._request("account/credits")
+
+    def get_account_usage(
+        self,
+        from_date: Optional[Union[str, date, datetime]] = None,
+        to_date: Optional[Union[str, date, datetime]] = None,
+        group_by: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """
+        Return aggregated request and credit usage.
+
+        ``from_date`` and ``to_date`` map to the API's ``from`` and ``to``
+        parameters. The server defaults to the current month and accepts a
+        maximum range of 366 days.
+        """
+        params: Dict[str, Any] = {}
+        normalized_from = self._date_query_value(from_date, "from_date")
+        normalized_to = self._date_query_value(to_date, "to_date")
+        if normalized_from is not None:
+            params["from"] = normalized_from
+        if normalized_to is not None:
+            params["to"] = normalized_to
+        if group_by is not None:
+            normalized_group_by = str(group_by).strip().lower()
+            if normalized_group_by not in {"day", "month"}:
+                raise ValueError("Parameter 'group_by' must be 'day' or 'month'.")
+            params["group_by"] = normalized_group_by
+        return self._request("account/usage", params=params)
+
+    def get_account_usage_transactions(
+        self,
+        from_date: Optional[Union[str, date, datetime]] = None,
+        to_date: Optional[Union[str, date, datetime]] = None,
+        endpoint: Optional[str] = None,
+        per_page: Optional[int] = None,
+        cursor: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Return one cursor-paginated page of billed request transactions."""
+        params: Dict[str, Any] = {}
+        normalized_from = self._date_query_value(from_date, "from_date")
+        normalized_to = self._date_query_value(to_date, "to_date")
+        if normalized_from is not None:
+            params["from"] = normalized_from
+        if normalized_to is not None:
+            params["to"] = normalized_to
+        if endpoint is not None:
+            normalized_endpoint = str(endpoint).strip()
+            if not normalized_endpoint:
+                raise ValueError("Parameter 'endpoint' must not be empty.")
+            params["endpoint"] = normalized_endpoint
+        if per_page is not None:
+            if isinstance(per_page, bool) or not isinstance(per_page, int):
+                raise ValueError("Parameter 'per_page' must be an integer.")
+            if not 1 <= per_page <= 100:
+                raise ValueError("Parameter 'per_page' must be between 1 and 100.")
+            params["per_page"] = per_page
+        if cursor is not None:
+            normalized_cursor = str(cursor).strip()
+            if not normalized_cursor:
+                raise ValueError("Parameter 'cursor' must not be empty.")
+            params["cursor"] = normalized_cursor
+        return self._request("account/usage/transactions", params=params)
+
+    def iter_account_usage_transactions(
+        self,
+        from_date: Optional[Union[str, date, datetime]] = None,
+        to_date: Optional[Union[str, date, datetime]] = None,
+        endpoint: Optional[str] = None,
+        per_page: int = 25,
+    ) -> Iterator[Dict[str, Any]]:
+        """Yield all account usage transactions across cursor pages."""
+        cursor: Optional[str] = None
+        seen_cursors = set()
+        while True:
+            page = self.get_account_usage_transactions(
+                from_date=from_date,
+                to_date=to_date,
+                endpoint=endpoint,
+                per_page=per_page,
+                cursor=cursor,
+            )
+            transactions = page.get("transactions") if isinstance(page, dict) else None
+            pagination = page.get("pagination") if isinstance(page, dict) else None
+            if not isinstance(transactions, list) or not isinstance(pagination, dict):
+                raise InvalidResponseError(
+                    "Account transactions response must contain a transactions "
+                    "list and pagination object."
+                )
+            for transaction in transactions:
+                if not isinstance(transaction, dict):
+                    raise InvalidResponseError(
+                        "Account transactions entries must be JSON objects."
+                    )
+                yield transaction
+
+            next_cursor = pagination.get("next_cursor")
+            has_more = pagination.get("has_more")
+            if has_more is False or not next_cursor:
+                return
+            if next_cursor in seen_cursors:
+                raise InvalidResponseError(
+                    "Account transactions pagination repeated a cursor."
+                )
+            seen_cursors.add(next_cursor)
+            cursor = str(next_cursor)
+
+    def get_account_subscription(self) -> Dict[str, Any]:
+        """Return the account's current subscription and included features."""
+        return self._request("account/subscription")
+
+    def list_api_keys(self) -> Dict[str, Any]:
+        """List active API keys in the server's masked representation."""
+        return self._request("account/api-keys")
+
+    def create_api_key(self) -> Dict[str, Any]:
+        """
+        Create an API key using a Bearer token with ``account:keys``.
+
+        The full key is returned by the server only once.
+        """
+        if not self.bearer_token:
+            raise AuthenticationError(
+                "Creating an API key requires a Bearer token with the "
+                "'account:keys' ability."
+            )
+        # The endpoint has no documented idempotency key. Avoid retrying a
+        # response-lost POST because that could create multiple credentials.
+        return self._post("account/api-keys", max_retries=1)
+
+    def revoke_api_key(self, api_key_id: Union[str, int]) -> Dict[str, Any]:
+        """Revoke an API key using a Bearer token with ``account:keys``."""
+        if not self.bearer_token:
+            raise AuthenticationError(
+                "Revoking an API key requires a Bearer token with the "
+                "'account:keys' ability."
+            )
+        normalized_id = str(api_key_id).strip()
+        if not normalized_id:
+            raise ValueError("Parameter 'api_key_id' is required.")
+        return self._delete(f"account/api-keys/{quote(normalized_id, safe='')}")
+
+    # -------------------------------------------------------------------
+    # Signals
+    # -------------------------------------------------------------------
+
+    def list_signals(
+        self,
+        cursor: Optional[str] = None,
+        topics: Optional[Union[str, Enum, Iterable[Union[str, Enum]]]] = None,
+        organization_ids: Optional[Union[str, Iterable[str]]] = None,
+        from_date: Optional[Union[str, date, datetime]] = None,
+        to_date: Optional[Union[str, date, datetime]] = None,
+    ) -> Dict[str, Any]:
+        """Return one fixed-size, cursor-paginated page of company signals."""
+        params: Dict[str, Any] = {}
+        if cursor is not None:
+            normalized_cursor = str(cursor).strip()
+            if not normalized_cursor:
+                raise ValueError("Parameter 'cursor' must not be empty.")
+            params["cursor"] = normalized_cursor
+
+        normalized_topics = self._csv_query_value(topics, "topics")
+        if normalized_topics is not None:
+            topic_values = normalized_topics.split(",")
+            unknown_topics = [
+                topic for topic in topic_values if topic not in SIGNAL_TOPICS
+            ]
+            if unknown_topics:
+                raise ValueError(
+                    "Unsupported signal topic(s): "
+                    + ", ".join(unknown_topics)
+                    + ". Valid values are: "
+                    + ", ".join(SIGNAL_TOPICS)
+                )
+            params["topics"] = normalized_topics
+
+        normalized_organization_ids = self._csv_query_value(
+            organization_ids,
+            "organization_ids",
+        )
+        if normalized_organization_ids is not None:
+            params["organization_ids"] = normalized_organization_ids
+
+        normalized_from = self._date_query_value(from_date, "from_date")
+        normalized_to = self._date_query_value(to_date, "to_date")
+        if normalized_from is not None:
+            params["from"] = normalized_from
+        if normalized_to is not None:
+            params["to"] = normalized_to
+        return self._request("signals", params=params)
+
+    def iter_signals(
+        self,
+        topics: Optional[Union[str, Enum, Iterable[Union[str, Enum]]]] = None,
+        organization_ids: Optional[Union[str, Iterable[str]]] = None,
+        from_date: Optional[Union[str, date, datetime]] = None,
+        to_date: Optional[Union[str, date, datetime]] = None,
+        max_results: Optional[int] = None,
+    ) -> Iterator[Dict[str, Any]]:
+        """Yield signals lazily while preserving filters across cursor pages."""
+        if max_results is not None:
+            if isinstance(max_results, bool) or not isinstance(max_results, int):
+                raise ValueError("Parameter 'max_results' must be an integer.")
+            if max_results < 1:
+                raise ValueError("Parameter 'max_results' must be at least 1.")
+
+        cursor: Optional[str] = None
+        seen_cursors = set()
+        yielded = 0
+        while True:
+            page = self.list_signals(
+                cursor=cursor,
+                topics=topics,
+                organization_ids=organization_ids,
+                from_date=from_date,
+                to_date=to_date,
+            )
+            signals = page.get("signals") if isinstance(page, dict) else None
+            pagination = page.get("pagination") if isinstance(page, dict) else None
+            if not isinstance(signals, list) or not isinstance(pagination, dict):
+                raise InvalidResponseError(
+                    "Signals response must contain a signals list and "
+                    "pagination object."
+                )
+            for signal in signals:
+                if not isinstance(signal, dict):
+                    raise InvalidResponseError(
+                        "Signals entries must be JSON objects."
+                    )
+                yield signal
+                yielded += 1
+                if max_results is not None and yielded >= max_results:
+                    return
+
+            next_cursor = pagination.get("next_cursor")
+            if not pagination.get("has_more") or not next_cursor:
+                return
+            if next_cursor in seen_cursors:
+                raise InvalidResponseError("Signals pagination repeated a cursor.")
+            seen_cursors.add(next_cursor)
+            cursor = str(next_cursor)
+
+    def get_signal_catalog(self) -> Dict[str, Any]:
+        """Return the public Signals topic catalog."""
+        return self._request("signals/catalog")
+
+    def get_signal(self, signal_id: str) -> Dict[str, Any]:
+        """Return one signal by its stable event ID."""
+        normalized_id = str(signal_id).strip()
+        if not normalized_id:
+            raise ValueError("Parameter 'signal_id' is required.")
+        return self._request(f"signals/{quote(normalized_id, safe='')}")
+
+    # -------------------------------------------------------------------
+    # Monitoring (monitors, webhook endpoints, deliveries, events)
+    # -------------------------------------------------------------------
+
+    @staticmethod
+    def _validate_public_id(
+        value: Any,
+        pattern: "re.Pattern",
+        param_name: str,
+        example: str,
+    ) -> str:
+        if not isinstance(value, str) or not pattern.fullmatch(value):
+            raise ValueError(
+                f"Parameter '{param_name}' must be a public id like "
+                f"'{example}' (got {value!r})."
+            )
+        return value
+
+    @staticmethod
+    def _validate_poll_interval(value: Any) -> int:
+        if isinstance(value, bool) or not isinstance(value, int):
+            raise ValueError("Parameter 'poll_interval_days' must be an integer.")
+        if not 1 <= value <= 30:
+            raise ValueError(
+                "Parameter 'poll_interval_days' must be between 1 and 30."
+            )
+        return value
+
+    def get_monitoring_pricing(
+        self,
+        poll_interval_days: Optional[int] = None,
+    ) -> Dict[str, Any]:
+        """
+        Return the current monitoring pricing policy, topic entitlement and a
+        fresh-cycle estimate. Free.
+
+        :param poll_interval_days: Optional interval (1-30 days, default 30)
+                                   used for the returned estimate.
+        """
+        params: Dict[str, Any] = {}
+        if poll_interval_days is not None:
+            params["poll_interval_days"] = self._validate_poll_interval(
+                poll_interval_days
+            )
+        return self._request("account/monitoring/pricing", params=params)
+
+    def list_monitors(self) -> Dict[str, Any]:
+        """Return the newest 100 non-archived monitors (no cursor). Free."""
+        return self._request("account/monitors", params={})
+
+    def create_monitor(
+        self,
+        entity_id: str,
+        poll_interval_days: int,
+        endpoint_ids: Union[str, Iterable[str]],
+        label: Optional[str] = None,
+        idempotency_key: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """
+        Create a monitor for one organization and queue its free baseline.
+
+        The request itself charges zero credits and returns HTTP 202 with the
+        monitor in status ``initializing``. Activation and the first 10-credit
+        cycle floor happen asynchronously after the baseline completes.
+
+        :param entity_id: Organization entity id (e.g. from
+                          :meth:`fetch_organization`).
+        :param poll_interval_days: Polling interval, 1-30 days.
+        :param endpoint_ids: One or more owned, active, verified webhook
+                             endpoint ids (``wep_...``).
+        :param label: Optional display label (max 200 characters).
+        :param idempotency_key: Optional explicit ``Idempotency-Key``;
+                                generated when omitted.
+        """
+        if not isinstance(entity_id, str) or not _MONITOR_ENTITY_ID_PATTERN.fullmatch(
+            entity_id
+        ):
+            raise ValueError(
+                "Parameter 'entity_id' must be a 1-128 character organization "
+                "id using [A-Za-z0-9._~-]."
+            )
+        if isinstance(endpoint_ids, str):
+            endpoint_values: List[str] = [endpoint_ids]
+        else:
+            endpoint_values = [str(item) for item in endpoint_ids]
+        deduped_endpoints: List[str] = []
+        for endpoint_id in endpoint_values:
+            self._validate_public_id(
+                endpoint_id,
+                _WEBHOOK_ENDPOINT_ID_PATTERN,
+                "endpoint_ids",
+                "wep_01hzy2q6j3g5m8v9x0abcde123",
+            )
+            if endpoint_id not in deduped_endpoints:
+                deduped_endpoints.append(endpoint_id)
+        if not deduped_endpoints:
+            raise ValueError("Parameter 'endpoint_ids' must contain at least one id.")
+        if label is not None and (not isinstance(label, str) or len(label) > 200):
+            raise ValueError(
+                "Parameter 'label' must be a string of at most 200 characters."
+            )
+
+        body: Dict[str, Any] = {
+            "entity_id": entity_id,
+            "poll_interval_days": self._validate_poll_interval(poll_interval_days),
+            "endpoint_ids": deduped_endpoints,
+        }
+        if label is not None:
+            body["label"] = label
+        return self._mutate(
+            "POST",
+            "account/monitors",
+            json_body=body,
+            idempotency_key=idempotency_key,
+        )
+
+    def get_monitor(self, monitor_id: str) -> Dict[str, Any]:
+        """
+        Return one monitor with its active billing-cycle summary (or null)
+        and the newest 20 poll runs. Archived monitors remain readable. Free.
+        """
+        self._validate_public_id(
+            monitor_id, _MONITOR_ID_PATTERN, "monitor_id", "mon_01hzy2q6j3g5m8v9x0abcde123"
+        )
+        return self._request(f"account/monitors/{monitor_id}", params={})
+
+    def update_monitor(
+        self,
+        monitor_id: str,
+        poll_interval_days: int,
+        idempotency_key: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """
+        Change a monitor's polling interval prospectively.
+
+        Cannot change label or destinations and never refunds or rewrites
+        settled charges.
+        """
+        self._validate_public_id(
+            monitor_id, _MONITOR_ID_PATTERN, "monitor_id", "mon_01hzy2q6j3g5m8v9x0abcde123"
+        )
+        body = {
+            "poll_interval_days": self._validate_poll_interval(poll_interval_days),
+        }
+        return self._mutate(
+            "PATCH",
+            f"account/monitors/{monitor_id}",
+            json_body=body,
+            idempotency_key=idempotency_key,
+        )
+
+    def pause_monitor(
+        self,
+        monitor_id: str,
+        idempotency_key: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """
+        Pause an active monitor (``paused_user``); every other state is a
+        200 no-op. Pausing ``initializing`` does not stop the baseline or a
+        possible activation floor - archive instead to stop before
+        activation. No refund.
+        """
+        self._validate_public_id(
+            monitor_id, _MONITOR_ID_PATTERN, "monitor_id", "mon_01hzy2q6j3g5m8v9x0abcde123"
+        )
+        return self._mutate(
+            "POST",
+            f"account/monitors/{monitor_id}/pause",
+            idempotency_key=idempotency_key,
+        )
+
+    def resume_monitor(
+        self,
+        monitor_id: str,
+        idempotency_key: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """
+        Resume a paused monitor.
+
+        Requeues an incomplete baseline for free. With a completed baseline
+        the API rechecks policy, endpoints and topic access before funding;
+        it reuses a live funded cycle for 0 credits or charges a new
+        10-credit floor. Inspect ``meta.activated``, ``meta.baseline_queued``
+        and ``meta.billing`` in the response.
+
+        """
+        self._validate_public_id(
+            monitor_id, _MONITOR_ID_PATTERN, "monitor_id", "mon_01hzy2q6j3g5m8v9x0abcde123"
+        )
+        return self._mutate(
+            "POST",
+            f"account/monitors/{monitor_id}/resume",
+            idempotency_key=idempotency_key,
+        )
+
+    def archive_monitor(
+        self,
+        monitor_id: str,
+        idempotency_key: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Archive a monitor (never hard-deletes). History stays readable."""
+        self._validate_public_id(
+            monitor_id, _MONITOR_ID_PATTERN, "monitor_id", "mon_01hzy2q6j3g5m8v9x0abcde123"
+        )
+        return self._mutate(
+            "DELETE",
+            f"account/monitors/{monitor_id}",
+            idempotency_key=idempotency_key,
+        )
+
+    # -- Webhook endpoints ----------------------------------------------
+
+    def list_webhook_endpoints(self) -> Dict[str, Any]:
+        """
+        Return all non-archived webhook endpoints (maximum 10). URLs and
+        custom headers are masked. Free.
+        """
+        return self._request("account/webhook-endpoints", params={})
+
+    def create_webhook_endpoint(
+        self,
+        name: str,
+        url: str,
+        headers: Optional[Mapping[str, str]] = None,
+        idempotency_key: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """
+        Register a webhook receiver endpoint.
+
+        Returns HTTP 201 with the endpoint in ``pending_verification`` plus a
+        one-time ``whsec_`` signing secret - store it immediately, it is
+        never shown again. Requires a Bearer token with ``account:read`` and
+        ``account:keys``.
+
+        :param name: Display name (1-120 characters).
+        :param url: Public HTTPS URL on port 443. IP literals, userinfo,
+                    fragments and private DNS answers are rejected.
+        :param headers: Optional write-only custom headers (encrypted at
+                        rest; transport, forwarding and ``webhook-*`` names
+                        are reserved).
+        """
+        if not isinstance(name, str) or not name.strip() or len(name) > 120:
+            raise ValueError(
+                "Parameter 'name' must be a non-empty string of at most 120 "
+                "characters."
+            )
+        if not isinstance(url, str) or not url.strip():
+            raise ValueError("Parameter 'url' is required.")
+        body: Dict[str, Any] = {"name": name, "url": url}
+        if headers is not None:
+            if not isinstance(headers, Mapping) or not all(
+                isinstance(k, str) and isinstance(v, str) for k, v in headers.items()
+            ):
+                raise ValueError(
+                    "Parameter 'headers' must map string names to string values."
+                )
+            body["headers"] = dict(headers)
+        return self._mutate(
+            "POST",
+            "account/webhook-endpoints",
+            json_body=body,
+            idempotency_key=idempotency_key,
+        )
+
+    def verify_webhook_endpoint(
+        self,
+        endpoint_id: str,
+        idempotency_key: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """
+        Send a synchronous signed challenge to a ``pending_verification``
+        endpoint. The receiver must answer 2xx and echo ``data.challenge`` in
+        a ``webhook-verification`` header. A successful first verification
+        activates the endpoint immediately.
+
+        A failed challenge is a normal outcome: this method returns the
+        ``{"verified": false, ...}`` payload instead of raising. An already
+        verified or disabled endpoint returns its stored state without
+        network I/O and is not re-enabled; use
+        :meth:`enable_webhook_endpoint` to reactivate after a disable.
+
+        Never retried automatically beyond the documented safe cases: a 409
+        ambiguity raises :class:`IdempotencyConflictError` and must not be
+        re-driven with a new key.
+        """
+        self._validate_public_id(
+            endpoint_id,
+            _WEBHOOK_ENDPOINT_ID_PATTERN,
+            "endpoint_id",
+            "wep_01hzy2q6j3g5m8v9x0abcde123",
+        )
+        return self._mutate(
+            "POST",
+            f"account/webhook-endpoints/{endpoint_id}/verify",
+            idempotency_key=idempotency_key,
+            network_io=True,
+            verified_result_on_422=True,
+        )
+
+    def rotate_webhook_endpoint_secret(
+        self,
+        endpoint_id: str,
+        idempotency_key: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """
+        Rotate the signing secret; returns a new one-time ``whsec_`` value.
+
+        Normal deliveries, tests and samples are signed with both current and
+        predecessor secrets for seven days; verification challenges use only
+        the current secret. Requires ``account:read`` plus ``account:keys``.
+        """
+        self._validate_public_id(
+            endpoint_id,
+            _WEBHOOK_ENDPOINT_ID_PATTERN,
+            "endpoint_id",
+            "wep_01hzy2q6j3g5m8v9x0abcde123",
+        )
+        return self._mutate(
+            "POST",
+            f"account/webhook-endpoints/{endpoint_id}/rotate-secret",
+            idempotency_key=idempotency_key,
+        )
+
+    def test_webhook_endpoint(
+        self,
+        endpoint_id: str,
+        idempotency_key: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """
+        Send a synchronous signed ``endpoint.test`` attempt.
+
+        HTTP 200 means the attempt was recorded, not necessarily delivered -
+        inspect ``delivery.status`` in the response.
+        """
+        self._validate_public_id(
+            endpoint_id,
+            _WEBHOOK_ENDPOINT_ID_PATTERN,
+            "endpoint_id",
+            "wep_01hzy2q6j3g5m8v9x0abcde123",
+        )
+        return self._mutate(
+            "POST",
+            f"account/webhook-endpoints/{endpoint_id}/test",
+            idempotency_key=idempotency_key,
+            network_io=True,
+        )
+
+    def enable_webhook_endpoint(
+        self,
+        endpoint_id: str,
+        idempotency_key: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """
+        Enable a verified endpoint - needed to reactivate after a disable
+        (a successful first verification activates automatically). Requires
+        ``account:read`` plus ``account:keys``.
+        """
+        return self._set_webhook_endpoint_state(
+            endpoint_id, "enable", idempotency_key
+        )
+
+    def disable_webhook_endpoint(
+        self,
+        endpoint_id: str,
+        idempotency_key: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """
+        Disable an endpoint. Monitors that lose their last active endpoint
+        are parked in ``paused_configuration``. Requires ``account:read``
+        plus ``account:keys``.
+        """
+        return self._set_webhook_endpoint_state(
+            endpoint_id, "disable", idempotency_key
+        )
+
+    def _set_webhook_endpoint_state(
+        self,
+        endpoint_id: str,
+        state: str,
+        idempotency_key: Optional[str],
+    ) -> Dict[str, Any]:
+        self._validate_public_id(
+            endpoint_id,
+            _WEBHOOK_ENDPOINT_ID_PATTERN,
+            "endpoint_id",
+            "wep_01hzy2q6j3g5m8v9x0abcde123",
+        )
+        return self._mutate(
+            "POST",
+            f"account/webhook-endpoints/{endpoint_id}/{state}",
+            idempotency_key=idempotency_key,
+        )
+
+    def archive_webhook_endpoint(
+        self,
+        endpoint_id: str,
+        idempotency_key: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """
+        Archive an endpoint and its subscriptions. Requires ``account:read``
+        plus ``account:keys``.
+        """
+        self._validate_public_id(
+            endpoint_id,
+            _WEBHOOK_ENDPOINT_ID_PATTERN,
+            "endpoint_id",
+            "wep_01hzy2q6j3g5m8v9x0abcde123",
+        )
+        return self._mutate(
+            "DELETE",
+            f"account/webhook-endpoints/{endpoint_id}",
+            idempotency_key=idempotency_key,
+        )
+
+    # -- Webhook deliveries & events ------------------------------------
+
+    def list_webhook_deliveries(
+        self,
+        endpoint_id: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """
+        Return the newest 50 delivery summaries (no cursor/detail). Free.
+
+        :param endpoint_id: Optional ``wep_...`` id to filter by endpoint.
+        """
+        params: Dict[str, Any] = {}
+        if endpoint_id is not None:
+            self._validate_public_id(
+                endpoint_id,
+                _WEBHOOK_ENDPOINT_ID_PATTERN,
+                "endpoint_id",
+                "wep_01hzy2q6j3g5m8v9x0abcde123",
+            )
+            params["endpoint"] = endpoint_id
+        return self._request("account/webhook-deliveries", params=params)
+
+    def retry_webhook_delivery(
+        self,
+        delivery_id: str,
+        idempotency_key: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """
+        Retry an eligible retained failed delivery with the same message id
+        and body. The public ``delivery.attempts`` counter resets to 0;
+        append-only audit attempt numbers remain monotonic.
+        """
+        self._validate_public_id(
+            delivery_id,
+            _WEBHOOK_DELIVERY_ID_PATTERN,
+            "delivery_id",
+            "del_01hzy2q6j3g5m8v9x0abcde123",
+        )
+        return self._mutate(
+            "POST",
+            f"account/webhook-deliveries/{delivery_id}/retry",
+            idempotency_key=idempotency_key,
+        )
+
+    def list_webhook_events(self) -> Dict[str, Any]:
+        """Return the newest 50 webhook event summaries (no body/replay). Free."""
+        return self._request("account/webhook-events", params={})
 
     # -------------------------------------------------------------------
     # Token management (Bearer tokens)
@@ -1339,7 +2386,9 @@ class Handelsregister:
 
         normalized = {k: _norm(v) for k, v in sorted(params.items())}
         raw = json.dumps(normalized, sort_keys=True, ensure_ascii=False).encode()
-        return hashlib.sha1(raw).hexdigest()[:8]
+        # This is a non-security cache namespace. Keep SHA-1 for compatibility
+        # with snapshot filenames produced by earlier SDK releases.
+        return hashlib.sha1(raw).hexdigest()[:8]  # noqa: S324
 
     def _create_snapshot(
         self,

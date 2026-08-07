@@ -251,6 +251,68 @@ def _display_person(result: dict) -> None:
             print(f"- {r.get('name', '')}: {role_label}")
 
 
+def _print_json(result: Any) -> None:
+    print(json.dumps(result, indent=2, ensure_ascii=False))
+
+
+def _display_monitors(result: dict) -> None:
+    """Pretty-print a monitor list."""
+    monitors = result.get("monitors", []) or []
+    if RICH_AVAILABLE:
+        console = Console()
+        table = Table(title=f"Monitors ({len(monitors)})")
+        table.add_column("ID")
+        table.add_column("Label")
+        table.add_column("Entity")
+        table.add_column("Interval")
+        table.add_column("Status")
+        table.add_column("Next poll")
+        for monitor in monitors:
+            table.add_row(
+                monitor.get("id", ""),
+                monitor.get("label") or "",
+                monitor.get("entity_id", ""),
+                f"{monitor.get('poll_interval_days', '')}d",
+                monitor.get("status", ""),
+                str(monitor.get("next_poll_at") or ""),
+            )
+        console.print(table)
+    else:
+        for monitor in monitors:
+            print(
+                f"- {monitor.get('id', '')}  {monitor.get('label') or ''} "
+                f"[{monitor.get('status', '')}]"
+            )
+
+
+def _display_webhook_endpoints(result: dict) -> None:
+    """Pretty-print a webhook endpoint list."""
+    endpoints = result.get("endpoints", []) or []
+    if RICH_AVAILABLE:
+        console = Console()
+        table = Table(title=f"Webhook endpoints ({len(endpoints)})")
+        table.add_column("ID")
+        table.add_column("Name")
+        table.add_column("URL")
+        table.add_column("Status")
+        table.add_column("Failures")
+        for endpoint in endpoints:
+            table.add_row(
+                endpoint.get("id", ""),
+                endpoint.get("name", ""),
+                endpoint.get("url", ""),
+                endpoint.get("status", ""),
+                str(endpoint.get("consecutive_failures", "")),
+            )
+        console.print(table)
+    else:
+        for endpoint in endpoints:
+            print(
+                f"- {endpoint.get('id', '')}  {endpoint.get('name', '')} "
+                f"[{endpoint.get('status', '')}]"
+            )
+
+
 def _display_search_results(result: dict) -> None:
     """Pretty-print search results."""
     results = result.get("results", []) or []
@@ -402,6 +464,108 @@ def main():
         help="Output document path (.pdf, or .xml for SI)",
     )
     document_parser.add_argument("--ai-search", dest="ai_search", default="off")
+
+    monitors_parser = subparsers.add_parser(
+        "monitors", help="Manage organization monitors"
+    )
+    monitors_sub = monitors_parser.add_subparsers(dest="monitors_action")
+
+    mon_pricing = monitors_sub.add_parser(
+        "pricing", help="Show the current pricing policy and estimate"
+    )
+    mon_pricing.add_argument(
+        "--interval",
+        dest="poll_interval_days",
+        type=int,
+        help="Poll interval in days (1-30) used for the estimate",
+    )
+
+    mon_list = monitors_sub.add_parser("list", help="List monitors")
+    mon_list.add_argument("--json", dest="output_json", action="store_true")
+
+    mon_show = monitors_sub.add_parser("show", help="Show one monitor with runs")
+    mon_show.add_argument("monitor_id", help="Monitor id (mon_...)")
+
+    mon_create = monitors_sub.add_parser("create", help="Create a monitor")
+    mon_create.add_argument("--entity-id", dest="entity_id", required=True)
+    mon_create.add_argument(
+        "--interval", dest="poll_interval_days", type=int, required=True
+    )
+    mon_create.add_argument(
+        "--endpoint",
+        dest="endpoint_ids",
+        action="append",
+        required=True,
+        help="Webhook endpoint id (wep_...); repeat as needed",
+    )
+    mon_create.add_argument("--label", dest="label")
+    mon_create.add_argument("--idempotency-key", dest="idempotency_key")
+
+    mon_update = monitors_sub.add_parser("update", help="Change the poll interval")
+    mon_update.add_argument("monitor_id")
+    mon_update.add_argument(
+        "--interval", dest="poll_interval_days", type=int, required=True
+    )
+    mon_update.add_argument("--idempotency-key", dest="idempotency_key")
+
+    mon_pause = monitors_sub.add_parser("pause", help="Pause a monitor")
+    mon_pause.add_argument("monitor_id")
+    mon_pause.add_argument("--idempotency-key", dest="idempotency_key")
+
+    mon_resume = monitors_sub.add_parser("resume", help="Resume a monitor")
+    mon_resume.add_argument("monitor_id")
+    mon_resume.add_argument("--idempotency-key", dest="idempotency_key")
+
+    mon_archive = monitors_sub.add_parser("archive", help="Archive a monitor")
+    mon_archive.add_argument("monitor_id")
+    mon_archive.add_argument("--idempotency-key", dest="idempotency_key")
+
+    webhooks_parser = subparsers.add_parser(
+        "webhooks", help="Manage webhook endpoints, deliveries and events"
+    )
+    webhooks_sub = webhooks_parser.add_subparsers(dest="webhooks_action")
+
+    wh_list = webhooks_sub.add_parser("list", help="List webhook endpoints")
+    wh_list.add_argument("--json", dest="output_json", action="store_true")
+
+    wh_create = webhooks_sub.add_parser("create", help="Register a webhook endpoint")
+    wh_create.add_argument("--name", required=True)
+    wh_create.add_argument("--url", required=True, help="Public HTTPS URL (port 443)")
+    wh_create.add_argument(
+        "--header",
+        dest="header_items",
+        action="append",
+        default=[],
+        help="Custom header as name=value; repeat as needed",
+    )
+    wh_create.add_argument("--idempotency-key", dest="idempotency_key")
+
+    for action_name, action_help in [
+        ("verify", "Send the signed verification challenge"),
+        ("test", "Send a signed test delivery"),
+        ("rotate-secret", "Rotate the signing secret"),
+        ("enable", "Enable a verified endpoint"),
+        ("disable", "Disable an endpoint"),
+        ("archive", "Archive an endpoint"),
+    ]:
+        action_parser = webhooks_sub.add_parser(action_name, help=action_help)
+        action_parser.add_argument("endpoint_id", help="Endpoint id (wep_...)")
+        action_parser.add_argument("--idempotency-key", dest="idempotency_key")
+
+    wh_deliveries = webhooks_sub.add_parser(
+        "deliveries", help="List the newest 50 deliveries"
+    )
+    wh_deliveries.add_argument(
+        "--endpoint", dest="endpoint_id", help="Filter by endpoint id (wep_...)"
+    )
+
+    wh_retry = webhooks_sub.add_parser(
+        "retry-delivery", help="Retry a retained failed delivery"
+    )
+    wh_retry.add_argument("delivery_id", help="Delivery id (del_...)")
+    wh_retry.add_argument("--idempotency-key", dest="idempotency_key")
+
+    webhooks_sub.add_parser("events", help="List the newest 50 webhook events")
 
     args = parser.parse_args()
 
@@ -579,6 +743,132 @@ def main():
                 output_file=args.output_file,
             )
             print(f"Document saved to: {args.output_file}")
+    elif args.command == "monitors":
+        action = args.monitors_action
+        if action == "pricing":
+            _print_json(
+                client.get_monitoring_pricing(
+                    poll_interval_days=args.poll_interval_days
+                )
+            )
+        elif action == "list":
+            result = client.list_monitors()
+            if args.output_json:
+                _print_json(result)
+            else:
+                _display_monitors(result)
+        elif action == "show":
+            _print_json(client.get_monitor(args.monitor_id))
+        elif action == "create":
+            _print_json(
+                client.create_monitor(
+                    entity_id=args.entity_id,
+                    poll_interval_days=args.poll_interval_days,
+                    endpoint_ids=args.endpoint_ids,
+                    label=args.label,
+                    idempotency_key=args.idempotency_key,
+                )
+            )
+        elif action == "update":
+            _print_json(
+                client.update_monitor(
+                    args.monitor_id,
+                    poll_interval_days=args.poll_interval_days,
+                    idempotency_key=args.idempotency_key,
+                )
+            )
+        elif action == "pause":
+            _print_json(
+                client.pause_monitor(
+                    args.monitor_id, idempotency_key=args.idempotency_key
+                )
+            )
+        elif action == "resume":
+            _print_json(
+                client.resume_monitor(
+                    args.monitor_id,
+                    idempotency_key=args.idempotency_key,
+                )
+            )
+        elif action == "archive":
+            _print_json(
+                client.archive_monitor(
+                    args.monitor_id, idempotency_key=args.idempotency_key
+                )
+            )
+        else:
+            monitors_parser.print_help()
+    elif args.command == "webhooks":
+        action = args.webhooks_action
+        if action == "list":
+            result = client.list_webhook_endpoints()
+            if args.output_json:
+                _print_json(result)
+            else:
+                _display_webhook_endpoints(result)
+        elif action == "create":
+            custom_headers = {}
+            for item in args.header_items:
+                if "=" not in item:
+                    wh_create.error("--header values must use name=value")
+                header_name, header_value = item.split("=", 1)
+                custom_headers[header_name.strip()] = header_value
+            _print_json(
+                client.create_webhook_endpoint(
+                    name=args.name,
+                    url=args.url,
+                    headers=custom_headers or None,
+                    idempotency_key=args.idempotency_key,
+                )
+            )
+        elif action == "verify":
+            _print_json(
+                client.verify_webhook_endpoint(
+                    args.endpoint_id, idempotency_key=args.idempotency_key
+                )
+            )
+        elif action == "test":
+            _print_json(
+                client.test_webhook_endpoint(
+                    args.endpoint_id, idempotency_key=args.idempotency_key
+                )
+            )
+        elif action == "rotate-secret":
+            _print_json(
+                client.rotate_webhook_endpoint_secret(
+                    args.endpoint_id, idempotency_key=args.idempotency_key
+                )
+            )
+        elif action == "enable":
+            _print_json(
+                client.enable_webhook_endpoint(
+                    args.endpoint_id, idempotency_key=args.idempotency_key
+                )
+            )
+        elif action == "disable":
+            _print_json(
+                client.disable_webhook_endpoint(
+                    args.endpoint_id, idempotency_key=args.idempotency_key
+                )
+            )
+        elif action == "archive":
+            _print_json(
+                client.archive_webhook_endpoint(
+                    args.endpoint_id, idempotency_key=args.idempotency_key
+                )
+            )
+        elif action == "deliveries":
+            _print_json(client.list_webhook_deliveries(endpoint_id=args.endpoint_id))
+        elif action == "retry-delivery":
+            _print_json(
+                client.retry_webhook_delivery(
+                    args.delivery_id, idempotency_key=args.idempotency_key
+                )
+            )
+        elif action == "events":
+            _print_json(client.list_webhook_events())
+        else:
+            webhooks_parser.print_help()
     else:
         parser.print_help()
 

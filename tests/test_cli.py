@@ -56,3 +56,104 @@ def test_search_help_documents_30_result_maximum(capsys, monkeypatch):
         assert exc.code == 0
 
     assert "maximum: 30" in capsys.readouterr().out
+
+
+def test_monitors_list_json(capsys, monkeypatch):
+    payload = {"monitors": [{"id": "mon_" + "a" * 26, "status": "active"}], "meta": {}}
+
+    monkeypatch.setattr(Handelsregister, "list_monitors", lambda self: payload)
+    monkeypatch.setenv("HANDELSREGISTER_API_KEY", "x")
+    monkeypatch.setattr(sys, "argv", ["prog", "monitors", "list", "--json"])
+    cli_main()
+    assert json.loads(capsys.readouterr().out) == payload
+
+
+def test_monitors_create_passes_arguments(capsys, monkeypatch):
+    called = {}
+
+    def fake_create(
+        self,
+        entity_id,
+        poll_interval_days,
+        endpoint_ids,
+        label=None,
+        idempotency_key=None,
+    ):
+        called.update(
+            entity_id=entity_id,
+            poll_interval_days=poll_interval_days,
+            endpoint_ids=endpoint_ids,
+            label=label,
+            idempotency_key=idempotency_key,
+        )
+        return {"monitor": {"id": "mon_" + "a" * 26}}
+
+    monkeypatch.setattr(Handelsregister, "create_monitor", fake_create)
+    monkeypatch.setenv("HANDELSREGISTER_API_KEY", "x")
+    wep = "wep_" + "b" * 26
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "prog", "monitors", "create",
+            "--entity-id", "abc123",
+            "--interval", "7",
+            "--endpoint", wep,
+            "--label", "BMW AG",
+            "--idempotency-key", "cli-create-1",
+        ],
+    )
+    cli_main()
+    assert called == {
+        "entity_id": "abc123",
+        "poll_interval_days": 7,
+        "endpoint_ids": [wep],
+        "label": "BMW AG",
+        "idempotency_key": "cli-create-1",
+    }
+    assert json.loads(capsys.readouterr().out)["monitor"]["id"].startswith("mon_")
+
+
+def test_webhooks_create_parses_headers(capsys, monkeypatch):
+    called = {}
+
+    def fake_create(self, name, url, headers=None, idempotency_key=None):
+        called.update(name=name, url=url, headers=headers)
+        return {"endpoint": {"id": "wep_" + "b" * 26}, "signing_secret": "whsec_x"}
+
+    monkeypatch.setattr(Handelsregister, "create_webhook_endpoint", fake_create)
+    monkeypatch.setenv("HANDELSREGISTER_API_KEY", "x")
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "prog", "webhooks", "create",
+            "--name", "Receiver",
+            "--url", "https://hooks.example.com/x",
+            "--header", "x-tenant=customer-42",
+        ],
+    )
+    cli_main()
+    assert called == {
+        "name": "Receiver",
+        "url": "https://hooks.example.com/x",
+        "headers": {"x-tenant": "customer-42"},
+    }
+    assert "whsec_x" in capsys.readouterr().out
+
+
+def test_webhooks_deliveries_filter(capsys, monkeypatch):
+    called = {}
+
+    def fake_list(self, endpoint_id=None):
+        called["endpoint_id"] = endpoint_id
+        return {"deliveries": [], "total": 0}
+
+    monkeypatch.setattr(Handelsregister, "list_webhook_deliveries", fake_list)
+    monkeypatch.setenv("HANDELSREGISTER_API_KEY", "x")
+    wep = "wep_" + "b" * 26
+    monkeypatch.setattr(
+        sys, "argv", ["prog", "webhooks", "deliveries", "--endpoint", wep]
+    )
+    cli_main()
+    assert called["endpoint_id"] == wep

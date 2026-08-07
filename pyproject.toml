@@ -1,6 +1,6 @@
 [build-system]
-# setuptools ≥ 68 knows PEP 621 well and is widely available
-requires       = ["setuptools>=68", "wheel", "build"]
+# Keep the backend compatible with the package's supported Python 3.8 runtime.
+requires       = ["setuptools>=68", "wheel"]
 build-backend  = "setuptools.build_meta"
 
 [project]
@@ -12,12 +12,12 @@ authors         = [
   { name = "Handelsregister Team", email = "info@handelsregister.ai" }
 ]
 
-license         = { text = "MIT" }
+license         = { text = "AGPL-3.0-only" }
 
 classifiers     = [
-  "Development Status :: 3 - Alpha",
+  "Development Status :: 4 - Beta",
   "Intended Audience :: Developers",
-  "License :: OSI Approved :: MIT License",
+  "License :: OSI Approved :: GNU Affero General Public License v3 (AGPLv3)",
   "Programming Language :: Python :: 3",
   "Programming Language :: Python :: 3.8",
   "Programming Language :: Python :: 3.9",
@@ -45,11 +45,10 @@ Homepage     = "https://github.com/Handelsregister-AI/handelsregister"
 
 [tool.setuptools]
 packages = ["handelsregister"]  # simple, explicit package list
-# setuptools automatically adds a "License-File" metadata field when license
-# files are included. This field is not yet accepted by PyPI and leads to
-# the "unrecognized or malformed field 'license-file'" error. We explicitly
-# disable this behaviour and include the LICENSE via MANIFEST.in instead.
-license-files = []
+# Use the legacy setuptools key while Python 3.8 remains supported. Modern
+# installers accept the resulting License-File metadata, and this ensures that
+# both the wheel and source distribution contain the license.
+license-files = ["LICENSE"]
 
 [tool.setuptools.dynamic]
 version = { attr = "handelsregister.version.__version__" }

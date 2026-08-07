@@ -56,6 +56,7 @@ docs/site/
 # Local development configuration
 local_settings.py
 settings_local.py
+.private/
 
 # Cached files
 .cache/

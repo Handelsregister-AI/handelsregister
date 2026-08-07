@@ -16,6 +16,7 @@ global-exclude *.egg
 exclude MANIFEST
 include LICENSE
 include CHANGELOG.md
+include SECURITY.md
 
 # -----------------------------------------------------------------------------
 # Unit test / coverage reports
@@ -66,6 +67,7 @@ recursive-exclude docs/site *
 # Local development configuration
 exclude local_settings.py
 exclude settings_local.py
+recursive-exclude .private *
 
 # -----------------------------------------------------------------------------
 # Cached files

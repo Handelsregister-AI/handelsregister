@@ -67,5 +67,39 @@ class RateLimitError(APIError):
     """Raised when the API rate limit is exhausted."""
 
 
+class ConflictError(APIError):
+    """Raised for HTTP 409 responses (duplicates and domain conflicts)."""
+
+
+class IdempotencyConflictError(ConflictError):
+    """
+    Raised for HTTP 409 idempotency conflicts and ambiguities.
+
+    The API either saw the same ``Idempotency-Key`` with different parameters
+    or cannot prove the outcome of an in-progress/ambiguous operation. Never
+    retry automatically: for endpoint verify/test operations the receiver may
+    already have been contacted, so re-driving the request or inventing a new
+    key can duplicate side effects. Inspect the stored operation state (or
+    contact support) instead.
+    """
+
+
+class IdempotencyKeyRequiredError(APIError):
+    """Raised for HTTP 428 responses when a mutation is missing its Idempotency-Key."""
+
+
 class ServerError(APIError):
     """Raised when the API returns a 5xx response."""
+
+
+class ServiceUnavailableError(ServerError):
+    """
+    Raised for HTTP 503 kill-switch responses (``temporarily_unavailable``).
+
+    The operation never started and the idempotency key was not claimed, so
+    the same request can safely be retried later with the same key.
+    """
+
+
+class WebhookSignatureError(HandelsregisterError):
+    """Raised when an incoming webhook fails signature or timestamp verification."""
