@@ -55,3 +55,10 @@ version = { attr = "handelsregister.version.__version__" }
 
 [project.scripts]
 handelsregister = "handelsregister.cli:main"
+
+[tool.ruff]
+target-version = "py38"
+
+[tool.ruff.lint]
+# Keep CI stable when Ruff changes its default rule selection.
+select = ["E4", "E7", "E9", "F"]
