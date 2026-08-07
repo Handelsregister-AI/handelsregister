@@ -8,7 +8,7 @@ Security fixes are released for the latest published version of the
 ## Reporting a vulnerability
 
 Please report suspected vulnerabilities privately to
-[info@handelsregister.ai](mailto:info@handelsregister.ai). Do not open a public
+[team@handelsregister.ai](mailto:team@handelsregister.ai). Do not open a public
 issue for a vulnerability until the maintainers confirm that disclosure is
 safe.
 

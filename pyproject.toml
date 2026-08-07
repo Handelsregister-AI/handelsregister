@@ -9,7 +9,7 @@ dynamic         = ["version"]
 description     = "Python SDK für den Zugriff auf die Handelsregister AI API"
 readme          = "README.md"
 authors         = [
-  { name = "Handelsregister Team", email = "info@handelsregister.ai" }
+  { name = "Handelsregister Team", email = "team@handelsregister.ai" }
 ]
 
 license         = { text = "AGPL-3.0-only" }
