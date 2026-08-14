@@ -8,18 +8,31 @@ import pytest
 from handelsregister import (
     Company,
     DocumentType,
+    ExecutiveFilters,
+    FilterCondition,
     Handelsregister,
+    InsolvencyStatus,
     InvalidResponseError,
     InsufficientCreditsError,
     MergersAndAcquisitions,
+    LifecycleFilters,
+    LegalFormLiabilityType,
+    LocationCoordinates,
+    OrganizationNetwork,
     NotFoundError,
     OrganizationFeature,
+    OrganizationStatus,
+    OwnershipFilters,
+    OwnershipStructure,
     RangeFilter,
     RateLimitError,
     RequestValidationError,
     RequestTimeoutError,
     SEARCH_ORGANIZATIONS_MAX_LIMIT,
+    SEARCH_ORGANIZATIONS_MAX_QUERY_LENGTH,
+    SearchSort,
     SearchFilters,
+    SortOrder,
     ServerError,
     SubscriptionRequiredError,
 )
@@ -162,6 +175,66 @@ def test_mergers_and_acquisitions_typed_view_is_lossless():
     assert info.control.controlled_by[0].loss_absorption_obligation is True
 
 
+def test_organization_network_typed_view_is_lossless():
+    payload = {
+        "depth": 2,
+        "nodes": [
+            {
+                "node_id": "organization-1",
+                "entity_id": "organization-1",
+                "type": "ORGANIZATION",
+                "name": "Example GmbH",
+                "depth": 0,
+                "is_root": True,
+            },
+            {
+                "node_id": "person-1",
+                "entity_id": "person-1",
+                "type": "PERSON",
+                "name": "Ada Example",
+                "depth": 1,
+                "is_root": False,
+            },
+        ],
+        "connections": [
+            {
+                "source": {
+                    "node_id": "person-1",
+                    "type": "PERSON",
+                    "name": "Ada Example",
+                },
+                "target": {
+                    "node_id": "organization-1",
+                    "type": "ORGANIZATION",
+                    "name": "Example GmbH",
+                },
+                "connection_type": "ROLE",
+                "label": "MANAGING_DIRECTOR",
+                "role": {
+                    "en": {"long": "Managing Director"},
+                    "de": {"long": "Geschäftsführerin"},
+                },
+                "start_date": "2020-01-01",
+                "end_date": None,
+                "is_current": True,
+                "depth": 1,
+            }
+        ],
+    }
+    company = company_from({"network": payload})
+    network = company.network
+
+    assert isinstance(network, OrganizationNetwork)
+    assert network.as_dict() == payload
+    assert network.depth == 2
+    assert network.root.name == "Example GmbH"
+    assert network.nodes[1].entity_id == "person-1"
+    assert network.connections[0].source.node_id == "person-1"
+    assert network.connections[0].target.name == "Example GmbH"
+    assert network.connections[0].role_name("de") == "Geschäftsführerin"
+    assert network.connections[0].is_current is True
+
+
 def test_current_shareholder_history_and_ubo_person_shape():
     company = company_from(
         {
@@ -260,7 +333,7 @@ def test_filters_only_search_supports_all_shapes_and_nested_cache(mock_httpx):
     _, session = _mock_get_response(mock_httpx, {"results": [], "total": 0})
     client = Handelsregister(api_key="test", cache_enabled=True)
     filters = SearchFilters(
-        legal_form_code=["GmbH", "AG"],
+        legal_form_code="GmbH",
         active=True,
         city="München",
         location_coordinates={"latitude": 48.13, "longitude": 11.58},
@@ -289,13 +362,69 @@ def test_filters_only_search_supports_all_shapes_and_nested_cache(mock_httpx):
         "gte": 1_000_000,
         "lte": 5_000_000,
     }
-    assert encoded["emp_size_category"] == "medium"
+    assert encoded["company_size_category"] == "medium"
+    assert encoded["location_coordinates"] == {"lat": 48.13, "lon": 11.58}
     assert encoded["active"] is True
+
+
+@patch("handelsregister.client.httpx.Client")
+def test_advanced_search_filters_sorting_and_match_context(mock_httpx):
+    _, session = _mock_get_response(mock_httpx, {"results": [], "total": 0})
+    client = Handelsregister(api_key="test")
+    filters = SearchFilters(
+        status=OrganizationStatus.ACTIVE,
+        legal_form_liability_type=LegalFormLiabilityType.LIMITED,
+        location_coordinates=LocationCoordinates(lat=48.137, lon=11.576),
+        location_max_distance_km=25,
+        ownership_filters=OwnershipFilters(
+            structure=OwnershipStructure.FAMILY,
+            owner_managed=True,
+            largest_share_ratio=FilterCondition(gte=0.5),
+            oldest_owner_birth_date=FilterCondition(lte="1960"),
+        ),
+        executive_filters=ExecutiveFilters(
+            md_oldest_birth_date=FilterCondition(lte="1960")
+        ),
+        lifecycle_filters=LifecycleFilters(
+            insolvency_active=FilterCondition(exists=False),
+            insolvency_status=InsolvencyStatus.OPENED,
+        ),
+    )
+
+    client.search_organizations(
+        filters=filters,
+        sort=SearchSort.LARGEST_SHARE_RATIO,
+        order=SortOrder.DESC,
+        match_context=True,
+    )
+
+    params = session.get.call_args.kwargs["params"]
+    assert params["sort"] == "largest_share_ratio"
+    assert params["order"] == "desc"
+    assert params["match_context"] == 1
+    encoded = json.loads(params["filters"])
+    assert encoded["status"] == "ACTIVE"
+    assert encoded["legal_form_liability_type"] == "limited"
+    assert encoded["location_coordinates"] == {"lat": 48.137, "lon": 11.576}
+    assert encoded["ownership_filters"] == {
+        "structure": "family",
+        "owner_managed": True,
+        "largest_share_ratio": {"gte": 0.5},
+        "oldest_owner_birth_date": {"lte": "1960"},
+    }
+    assert encoded["executive_filters"] == {
+        "md_oldest_birth_date": {"lte": "1960"}
+    }
+    assert encoded["lifecycle_filters"] == {
+        "insolvency_active": {"exists": False},
+        "insolvency_status": "opened",
+    }
 
 
 def test_search_and_realtime_validations():
     client = Handelsregister(api_key="test")
     assert SEARCH_ORGANIZATIONS_MAX_LIMIT == 30
+    assert SEARCH_ORGANIZATIONS_MAX_QUERY_LENGTH == 500
     with pytest.raises(ValueError, match="Either parameter"):
         client.search_organizations()
     with pytest.raises(ValueError, match="between 1 and 30"):
@@ -303,6 +432,32 @@ def test_search_and_realtime_validations():
     with pytest.raises(ValueError, match="requires"):
         client.search_organizations(
             filters={"location_max_distance_km": 10}
+        )
+    with pytest.raises(ValueError, match="at most 500"):
+        client.search_organizations(q="x" * 501)
+    with pytest.raises(TypeError, match="legal_form_code"):
+        client.search_organizations(filters={"legal_form_code": ["GmbH", "AG"]})
+    with pytest.raises(ValueError, match="location_max_distance_km"):
+        client.search_organizations(
+            filters={"location_coordinates": {"lat": 48.13, "lon": 11.58}}
+        )
+    with pytest.raises(ValueError, match="Parameter 'sort'"):
+        client.search_organizations(q="valid", sort="unknown")
+    with pytest.raises(ValueError, match="requires filter"):
+        client.search_organizations(q="valid", sort=SearchSort.DISTANCE)
+    with pytest.raises(TypeError, match="match_context"):
+        client.search_organizations(q="valid", match_context=1)
+    with pytest.raises(ValueError, match="unsupported value"):
+        client.search_organizations(
+            filters={"ownership_filters": {"structure": "unknown"}}
+        )
+    with pytest.raises(ValueError, match="unsupported operators"):
+        client.search_organizations(
+            filters={
+                "executive_filters": {
+                    "md_oldest_birth_date": {"before": "1960"}
+                }
+            }
         )
     with pytest.raises(ValueError, match="cannot be combined"):
         client.fetch_organization(
@@ -344,6 +499,9 @@ def test_iter_search_organizations_fetches_100_in_four_pages(monkeypatch):
             max_results=100,
             filters={"city": "München"},
             ai_mode="on-default",
+            sort=SearchSort.REVENUE,
+            order=SortOrder.DESC,
+            match_context=True,
             custom="value",
         )
     )
@@ -353,7 +511,16 @@ def test_iter_search_organizations_fetches_100_in_four_pages(monkeypatch):
     assert [call["limit"] for call in calls] == [30, 30, 30, 10]
     assert all(call["filters"] == {"city": "München"} for call in calls)
     assert all(call["ai_mode"] == "on-default" for call in calls)
-    assert all(call["kwargs"] == {"custom": "value"} for call in calls)
+    assert all(
+        call["kwargs"]
+        == {
+            "sort": SearchSort.REVENUE,
+            "order": SortOrder.DESC,
+            "match_context": True,
+            "custom": "value",
+        }
+        for call in calls
+    )
 
 
 def test_iter_search_organizations_is_lazy_and_stops_at_total(monkeypatch):
@@ -470,6 +637,72 @@ def test_structured_api_errors_preserve_meta(
         client.fetch_organization(q="Example GmbH")
     assert caught.value.status_code == status_code
     assert caught.value.meta["request_credit_cost"] in (0, 25)
+    if exception_type is SubscriptionRequiredError:
+        assert str(caught.value) == "fetch-person requires an active subscription."
+
+
+def test_subscription_error_exposes_plan_and_blocked_context():
+    error = SubscriptionRequiredError(
+        "These filters require an active Pro or Max subscription.",
+        status_code=403,
+        payload={
+            "error": "subscription_required",
+            "meta": {
+                "required_plans": ["pro", "max"],
+                "blocked_filters": ["ownership_filters"],
+                "blocked_features": ["network"],
+            },
+        },
+    )
+
+    assert error.code == "subscription_required"
+    assert error.required_plans == ["pro", "max"]
+    assert error.blocked_filters == ["ownership_filters"]
+    assert error.blocked_features == ["network"]
+
+
+def test_network_feature_preflights_plan_without_billing_base_request(monkeypatch):
+    client = Handelsregister(api_key="test", cache_enabled=False)
+    request = MagicMock()
+    monkeypatch.setattr(client, "_request", request)
+    monkeypatch.setattr(
+        client,
+        "get_account_subscription",
+        lambda: {"subscription": None, "meta": {"request_credit_cost": 0}},
+    )
+
+    with pytest.raises(SubscriptionRequiredError) as caught:
+        client.fetch_organization(
+            q="Example GmbH",
+            features=[OrganizationFeature.NETWORK],
+        )
+
+    request.assert_not_called()
+    assert str(caught.value) == (
+        "The 'network' feature requires an active Pro or Max subscription."
+    )
+    assert caught.value.required_plans == ["pro", "max"]
+    assert caught.value.blocked_features == ["network"]
+    assert caught.value.meta["request_credit_cost"] == 0
+
+
+def test_network_feature_allows_entitled_plan(monkeypatch):
+    client = Handelsregister(api_key="test", cache_enabled=False)
+    request = MagicMock(return_value={"network": {"nodes": [], "connections": []}})
+    monkeypatch.setattr(client, "_request", request)
+    monkeypatch.setattr(
+        client,
+        "get_account_subscription",
+        lambda: {"subscription": {"plan": "max", "status": "active"}},
+    )
+
+    result = client.fetch_organization(
+        q="Example GmbH",
+        features=[OrganizationFeature.NETWORK],
+    )
+
+    assert "network" in result
+    request.assert_called_once()
 
 
 @pytest.mark.parametrize(

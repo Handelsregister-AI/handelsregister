@@ -6,6 +6,7 @@ from .client import Handelsregister
 from .exceptions import HandelsregisterError
 from .models import (
     MergersAndAcquisitions,
+    OrganizationNetwork,
     RelatedPersons,
     RepresentationScheme,
 )
@@ -314,6 +315,7 @@ class Company:
                          - "ubos"
                          - "shareholdings"
                          - "mergers_and_acquisitions"
+                         - "network"
         :param ai_search: Whether to use AI-based search, defaults to "off".
         :param realtime_mode: Pass ``"handelsregister-default"`` to force a live
                               Handelsregister lookup (+10 credits).
@@ -760,6 +762,15 @@ class Company:
         return MergersAndAcquisitions.from_payload(
             self._data.get("mergers_and_acquisitions")
         )
+
+    # --------------------------------
+    # Organization and person network
+    # --------------------------------
+
+    @property
+    def network(self) -> OrganizationNetwork:
+        """Typed relationship graph returned by the ``network`` feature."""
+        return OrganizationNetwork.from_payload(self._data.get("network"))
 
     # --------------------------------
     # Annual financial statements

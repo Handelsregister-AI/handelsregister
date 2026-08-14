@@ -120,6 +120,7 @@ company = Company(
         "ubos",
         "shareholdings",
         "mergers_and_acquisitions",
+        "network",
         "annual_financial_statements",
         "news",
     ],
@@ -155,6 +156,11 @@ for director in company.related_person_entries.current:
 for transaction in company.mergers_and_acquisitions.transactions:
     print(transaction.date, transaction.headline_text("en"))
 
+# Relationship graph (Pro/Max)
+print(company.network.depth, len(company.network.nodes))
+for connection in company.network.connections:
+    print(connection.source.name, connection.label, connection.target.name)
+
 # News
 for article in company.news:
     print(article["publication_date"], article["title"])
@@ -186,7 +192,16 @@ for holding in person.shareholdings.current:
 ### Search
 
 ```python
-from handelsregister import Handelsregister, RangeFilter, SearchFilters
+from handelsregister import (
+    FilterCondition,
+    Handelsregister,
+    OrganizationStatus,
+    OwnershipFilters,
+    RangeFilter,
+    SearchFilters,
+    SearchSort,
+    SortOrder,
+)
 
 client = Handelsregister()
 
@@ -195,11 +210,17 @@ page = client.search_organizations(
     skip=0,
     filters=SearchFilters(
         city="München",
-        legal_form_code=["GmbH", "AG"],
-        active=True,
+        legal_form_code="GmbH",
+        status=OrganizationStatus.ACTIVE,
         pl_revenue=RangeFilter(gte=1_000_000, lte=5_000_000),
+        ownership_filters=OwnershipFilters(
+            owner_managed=True,
+            oldest_owner_birth_date=FilterCondition(lte="1960"),
+        ),
     ),
-    ai_mode="on-default",  # optional; makes the search cost 5 credits
+    sort=SearchSort.REVENUE,
+    order=SortOrder.DESC,
+    match_context=True,
 )
 
 print(page["total"])
@@ -226,14 +247,25 @@ For 100 available matches this makes four requests with page sizes
 `30`, `30`, `30`, and `10`. Each page is a separate billable API request;
 stopping iteration early prevents subsequent pages from being fetched.
 
-`q` may be omitted when at least one filter is supplied. `filters` may also be
-an ordinary dictionary. Supported keys cover registration dates, legal forms,
-WZ/NACE industries, active status, postal code/city/state, radius search,
-register court/type/number, company size, employee ranges, seven balance-sheet
-ranges, and revenue/net-income/EBIT ranges. Range dictionaries use
-`{"gte": minimum, "lte": maximum}`; either bound may be omitted.
-The SDK automatically translates these documented flat financial keys to the
-live API's nested `financial_filters` wire format.
+`q` may contain 2–500 characters and may be omitted when at least one filter is
+supplied. `filters` may also be an ordinary dictionary. Supported keys cover
+registration dates, legal form, exact organization status, liability type,
+WZ/NACE industries, location and radius, register data, company size, employee
+and financial ranges, plus the Pro/Max `ownership_filters`,
+`executive_filters`, and `lifecycle_filters` groups.
+
+Financial range dictionaries use `{"gte": minimum, "lte": maximum}` and are
+sent under `financial_filters`. Advanced register-data conditions additionally
+support `gt`, `lt`, `eq`, and `exists`; `FilterCondition` builds these objects.
+Use `LocationCoordinates(lat=..., lon=...)` for a radius search. The SDK also
+accepts the legacy `{"latitude": ..., "longitude": ...}` input and normalizes
+it to the current API shape.
+
+`sort` accepts the documented fields exposed by `SearchSort`, `order` accepts
+`SortOrder.ASC` or `SortOrder.DESC`, and `match_context=True` requests the
+matching ownership, executive, and lifecycle values under each result's
+`_match_context` object. Advanced register-data filters require a Pro or Max
+subscription; an insufficient plan raises `SubscriptionRequiredError`.
 
 ## Signals
 
@@ -772,12 +804,13 @@ $ handelsregister person \
     --feature shareholdings
 
 # Search (maximum 30 results per request)
-$ handelsregister search "tech" --postal-code 80992 --limit 20
+$ handelsregister search "tech" --postal-code 80992 --limit 20 \
+    --sort revenue --order desc
 
 # Filters-only search (JSON or repeated key=value)
 $ handelsregister search \
-    --filters '{"city":"München","pl_revenue":{"gte":1000000}}' \
-    --ai-mode on-default
+    --filters '{"city":"München","ownership_filters":{"owner_managed":true}}' \
+    --match-context
 
 # Enrich a file
 $ handelsregister enrich companies.csv --input csv \
@@ -831,6 +864,14 @@ $ handelsregister webhooks events
 | `ubos` (beta)                        | Ultimate beneficial owners (resolved / unresolved / coverage) |
 | `shareholdings` (beta)               | Outbound shareholdings (what the company owns in others)      |
 | `mergers_and_acquisitions` (beta)     | M&A transactions, succession, agreements, and control         |
+| `network` (beta, Pro/Max)             | Relationship graph of connected organizations and people     |
+
+`network` costs 25 credits when it returns data, in addition to the 5-credit
+organization lookup. It requires a Pro or Max plan.
+When `network` is requested, the SDK checks the account's subscription through
+the free Account API before making the billable organization request. Accounts
+below Pro receive `SubscriptionRequiredError` with the accepted plans instead
+of a silently reduced base profile.
 
 `realtime_mode="handelsregister-default"` forces a live Handelsregister lookup (+10 credits), independent of the feature flags above.
 It cannot be combined with `related_persons` or `publications`.
@@ -888,6 +929,7 @@ company.shareholders           # ShareholderInfo
 company.ubos                   # UBOInfo
 company.shareholdings          # ShareholdingsInfo
 company.mergers_and_acquisitions  # MergersAndAcquisitions
+company.network               # OrganizationNetwork
 
 # News & publications
 company.publications
@@ -936,6 +978,24 @@ responses are mapped to `RequestValidationError` (HTTP 400/422), `Authentication
 `ServiceUnavailableError` (503 kill switch). Receiver-side signature
 failures raise `WebhookSignatureError`. API exceptions preserve
 `status_code`, the raw JSON `payload`, and billing metadata through `.meta`.
+`SubscriptionRequiredError` additionally exposes `.required_plans`,
+`.blocked_filters`, and `.blocked_features` when the API supplies them:
+
+```python
+from handelsregister import SubscriptionRequiredError
+
+try:
+    page = client.search_organizations(filters={
+        "ownership_filters": {"owner_managed": True},
+    })
+except SubscriptionRequiredError as error:
+    print(error)                 # Human-readable server explanation
+    print(error.required_plans)  # e.g. ["pro", "max"]
+    print(error.blocked_filters)
+```
+
+The command-line client renders these failures as a concise plan-required
+message on stderr and exits with status 1; it does not print a Python traceback.
 
 Only network failures, HTTP 408/429, and server errors are retried. When supplied,
 the API's `Retry-After` header controls the delay. Monitoring mutations retry

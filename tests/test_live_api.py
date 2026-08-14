@@ -22,14 +22,23 @@ import pytest
 
 from handelsregister import (
     Company,
+    ExecutiveFilters,
+    FilterCondition,
     Handelsregister,
+    LifecycleFilters,
     MergersAndAcquisitions,
     ORGANIZATION_FEATURES,
+    OrganizationFeature,
+    OrganizationNetwork,
+    OrganizationStatus,
+    OwnershipFilters,
+    OwnershipStructure,
     Person,
     PersonShareholdings,
     RangeFilter,
     SEARCH_ORGANIZATIONS_MAX_LIMIT,
     SearchFilters,
+    SearchSort,
     ShareholderInfo,
     ShareholdingsInfo,
     UBOInfo,
@@ -39,7 +48,9 @@ from handelsregister import (
 COMPANY_QUERY = "KONUX GmbH München"
 COMPANY_ENTITY_ID = "110fe0da2f84c8d3174ec7bfd1f0f15a"
 
-ALL_FEATURES = list(ORGANIZATION_FEATURES)
+ALL_FEATURES = [
+    feature for feature in ORGANIZATION_FEATURES if feature != "network"
+]
 
 
 @pytest.fixture(scope="module")
@@ -89,6 +100,25 @@ class TestFetchOrganization:
         ):
             assert feature in data, f"missing feature in response: {feature}"
 
+    def test_network_feature(self, live_client):
+        target_page = live_client.search_organizations(q="BMW", limit=1)
+        assert target_page["results"]
+        company = Company(
+            target_page["results"][0]["entity_id"],
+            client=live_client,
+            features=[OrganizationFeature.NETWORK],
+        )
+        if "network" not in company.data:
+            pytest.skip("network data or the required Pro/Max plan is unavailable")
+        network = company.network
+        assert isinstance(network, OrganizationNetwork)
+        assert network.depth >= 1
+        assert network.root is not None
+        assert network.nodes
+        assert network.connections
+        assert network.connections[0].source.node_id
+        assert network.connections[0].target.node_id
+
 
 @pytest.mark.live_api
 class TestSearchOrganizations:
@@ -133,6 +163,111 @@ class TestSearchOrganizations:
         )
         assert isinstance(result, dict)
         assert isinstance(result.get("results"), list)
+
+    def test_advanced_filters_sort_and_match_context(self, live_client):
+        result = live_client.search_organizations(
+            limit=3,
+            filters=SearchFilters(
+                state="Bayern",
+                ownership_filters=OwnershipFilters(
+                    structure=[
+                        OwnershipStructure.FAMILY,
+                        OwnershipStructure.PARTNERS,
+                    ],
+                    owner_managed=True,
+                    oldest_owner_birth_date=FilterCondition(lte="1960"),
+                ),
+            ),
+            sort=SearchSort.LARGEST_SHARE_RATIO,
+            order="desc",
+            match_context=True,
+        )
+        assert result["results"]
+        assert any(
+            isinstance(item.get("_match_context"), dict)
+            and item["_match_context"]
+            for item in result["results"]
+        )
+
+    def test_executive_filter_match_context(self, live_client):
+        result = live_client.search_organizations(
+            limit=3,
+            filters=SearchFilters(
+                executive_filters=ExecutiveFilters(
+                    md_oldest_birth_date=FilterCondition(lte="1960")
+                )
+            ),
+            match_context=True,
+        )
+        assert result["results"]
+        assert any(
+            "executive" in (item.get("_match_context") or {})
+            for item in result["results"]
+        )
+
+    def test_lifecycle_exists_condition(self, live_client):
+        result = live_client.search_organizations(
+            limit=3,
+            filters=SearchFilters(
+                lifecycle_filters=LifecycleFilters(
+                    insolvency_active=FilterCondition(exists=False)
+                )
+            ),
+            match_context=True,
+        )
+        assert isinstance(result.get("results"), list)
+
+    def test_status_liability_and_legacy_geo_input(self, live_client):
+        result = live_client.search_organizations(
+            limit=3,
+            filters=SearchFilters(
+                status=OrganizationStatus.ACTIVE,
+                legal_form_liability_type="limited",
+                location_coordinates={
+                    "latitude": 48.137,
+                    "longitude": 11.576,
+                },
+                location_max_distance_km=25,
+            ),
+            sort=SearchSort.DISTANCE,
+            order="asc",
+        )
+        assert result["results"]
+        assert all(
+            item.get("status_normalized") == "ACTIVE"
+            for item in result["results"]
+        )
+
+    def test_registration_date_sort_order(self, live_client):
+        result = live_client.search_organizations(
+            q="GmbH",
+            limit=10,
+            sort=SearchSort.REGISTRATION_DATE,
+            order="desc",
+        )
+        dates = [
+            item["registration_date"]
+            for item in result["results"]
+            if item.get("registration_date")
+        ]
+        assert len(dates) >= 2
+        assert dates == sorted(dates, reverse=True)
+
+    def test_advanced_filter_iterator_preserves_options(self, live_client):
+        results = list(
+            live_client.iter_search_organizations(
+                filters=SearchFilters(
+                    ownership_filters=OwnershipFilters(owner_managed=True)
+                ),
+                page_size=20,
+                max_results=21,
+                sort=SearchSort.LARGEST_SHARE_RATIO,
+                order="desc",
+                match_context=True,
+            )
+        )
+        assert len(results) == 21
+        assert all(isinstance(item.get("_match_context"), dict) for item in results)
 
 
 @pytest.mark.live_api

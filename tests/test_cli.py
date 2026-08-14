@@ -1,8 +1,11 @@
 import sys
 import json
 
+import pytest
+
 from handelsregister.cli import main as cli_main, DEFAULT_FEATURES
 from handelsregister.client import Handelsregister
+from handelsregister.exceptions import SubscriptionRequiredError
 
 
 def test_fetch_json(capsys, sample_organization_response, monkeypatch):
@@ -56,6 +59,80 @@ def test_search_help_documents_30_result_maximum(capsys, monkeypatch):
         assert exc.code == 0
 
     assert "maximum: 30" in capsys.readouterr().out
+
+
+def test_search_cli_forwards_sort_order_and_match_context(capsys, monkeypatch):
+    called = {}
+
+    def fake_search(self, **kwargs):
+        called.update(kwargs)
+        return {"results": [], "total": 0, "meta": {}}
+
+    monkeypatch.setattr(Handelsregister, "search_organizations", fake_search)
+    monkeypatch.setenv("HANDELSREGISTER_API_KEY", "x")
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "prog",
+            "search",
+            "BMW",
+            "--sort",
+            "revenue",
+            "--order",
+            "desc",
+            "--match-context",
+            "--json",
+        ],
+    )
+
+    cli_main()
+
+    assert json.loads(capsys.readouterr().out)["total"] == 0
+    assert called["sort"] == "revenue"
+    assert called["order"] == "desc"
+    assert called["match_context"] is True
+
+
+def test_cli_prints_actionable_plan_error_without_traceback(capsys, monkeypatch):
+    def fake_search(self, **kwargs):
+        raise SubscriptionRequiredError(
+            "These filters require an active Pro or Max subscription.",
+            status_code=403,
+            payload={
+                "error": "subscription_required",
+                "meta": {
+                    "required_plans": ["pro", "max"],
+                    "blocked_filters": ["ownership_filters"],
+                    "request_credit_cost": 0,
+                },
+            },
+        )
+
+    monkeypatch.setattr(Handelsregister, "search_organizations", fake_search)
+    monkeypatch.setenv("HANDELSREGISTER_API_KEY", "x")
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "prog",
+            "search",
+            "--filters",
+            '{"ownership_filters":{"owner_managed":true}}',
+        ],
+    )
+
+    with pytest.raises(SystemExit) as caught:
+        cli_main()
+
+    captured = capsys.readouterr()
+    assert caught.value.code == 1
+    assert captured.out == ""
+    assert "Plan required:" in captured.err
+    assert "Pro, Max" in captured.err
+    assert "ownership_filters" in captured.err
+    assert "subscription_required" not in captured.err
+    assert "Traceback" not in captured.err
 
 
 def test_monitors_list_json(capsys, monkeypatch):

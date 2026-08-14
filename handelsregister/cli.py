@@ -1,5 +1,6 @@
 import argparse
 import json
+import sys
 from typing import List, Optional, Any
 
 from .client import Handelsregister
@@ -7,7 +8,10 @@ from .constants import (
     DOCUMENT_TYPES,
     ORGANIZATION_FEATURES,
     SEARCH_ORGANIZATIONS_MAX_LIMIT,
+    SEARCH_SORT_FIELDS,
+    SORT_ORDERS,
 )
+from .exceptions import HandelsregisterError, SubscriptionRequiredError
 
 DEFAULT_FEATURES = [
     "related_persons",
@@ -343,7 +347,7 @@ def _display_search_results(result: dict) -> None:
             print(f"Total: {total}")
 
 
-def main():
+def _main():
     parser = argparse.ArgumentParser(description="Handelsregister.ai CLI")
     subparsers = parser.add_subparsers(dest="command")
 
@@ -420,6 +424,22 @@ def main():
         "--ai-mode",
         dest="ai_mode",
         help="AI-assisted search mode (on-default)",
+    )
+    search_parser.add_argument(
+        "--sort",
+        choices=SEARCH_SORT_FIELDS,
+        help="Sort field for organization results",
+    )
+    search_parser.add_argument(
+        "--order",
+        choices=SORT_ORDERS,
+        help="Sort direction (asc or desc)",
+    )
+    search_parser.add_argument(
+        "--match-context",
+        action="store_true",
+        default=None,
+        help="Include register-data values that matched advanced filters",
     )
     search_parser.add_argument(
         "--json",
@@ -663,6 +683,9 @@ def main():
                     limit=args.limit,
                     filters=filters,
                     ai_mode=args.ai_mode,
+                    sort=args.sort,
+                    order=args.order,
+                    match_context=args.match_context,
                 )
         else:
             print("Searching...", flush=True)
@@ -672,6 +695,9 @@ def main():
                 limit=args.limit,
                 filters=filters,
                 ai_mode=args.ai_mode,
+                sort=args.sort,
+                order=args.order,
+                match_context=args.match_context,
             )
 
         if args.output_json:
@@ -871,6 +897,31 @@ def main():
             webhooks_parser.print_help()
     else:
         parser.print_help()
+
+
+def _format_cli_error(error: HandelsregisterError) -> str:
+    """Render API failures without exposing a Python traceback."""
+    if not isinstance(error, SubscriptionRequiredError):
+        return f"Error: {error}"
+
+    lines = [f"Plan required: {error}"]
+    if error.required_plans:
+        plans = ", ".join(plan.capitalize() for plan in error.required_plans)
+        lines.append(f"Required plans: {plans}")
+    if error.blocked_filters:
+        lines.append("Blocked filters: " + ", ".join(error.blocked_filters))
+    if error.blocked_features:
+        lines.append("Blocked features: " + ", ".join(error.blocked_features))
+    return "\n".join(lines)
+
+
+def main():
+    """Run the CLI and turn SDK errors into concise terminal messages."""
+    try:
+        _main()
+    except HandelsregisterError as error:
+        print(_format_cli_error(error), file=sys.stderr)
+        raise SystemExit(1) from None
 
 
 if __name__ == "__main__":

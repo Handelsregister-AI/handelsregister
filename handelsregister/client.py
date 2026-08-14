@@ -22,9 +22,16 @@ except ImportError as exc:
 from .version import __version__
 from .constants import (
     DOCUMENT_TYPES,
+    INSOLVENCY_STATUSES,
+    LEGAL_FORM_LIABILITY_TYPES,
+    ORGANIZATION_STATUSES,
+    OWNERSHIP_STRUCTURES,
     REALTIME_INCOMPATIBLE_FEATURES,
     SEARCH_ORGANIZATIONS_MAX_LIMIT,
+    SEARCH_ORGANIZATIONS_MAX_QUERY_LENGTH,
+    SEARCH_SORT_FIELDS,
     SIGNAL_TOPICS,
+    SORT_ORDERS,
     normalize_features,
 )
 from .exceptions import (
@@ -226,8 +233,6 @@ class Handelsregister:
     def _error_message(status_code: int, payload: Any) -> str:
         if isinstance(payload, dict):
             error = payload.get("error")
-            if isinstance(error, str) and error:
-                return error
             if isinstance(error, dict):
                 for key in ("message", "detail", "title", "code"):
                     value = error.get(key)
@@ -247,10 +252,15 @@ class Handelsregister:
                 ]
                 if messages:
                     return "; ".join(messages)
-            for key in ("message", "title", "code"):
+            for key in ("message", "title"):
                 value = payload.get(key)
                 if isinstance(value, str) and value:
                     return value
+            if isinstance(error, str) and error:
+                return error
+            code = payload.get("code")
+            if isinstance(code, str) and code:
+                return code
         return f"handelsregister.ai API request failed with HTTP {status_code}"
 
     @staticmethod
@@ -634,6 +644,51 @@ class Handelsregister:
     # Public endpoints
     # -------------------------------------------------------------------
 
+    def _network_subscription_access(self) -> Optional[bool]:
+        """
+        Return whether the current plan includes ``network``.
+
+        ``None`` means the account endpoint could not provide a definitive
+        answer, in which case the organization request remains backward
+        compatible and the API decides what to return.
+        """
+        try:
+            account = self.get_account_subscription()
+        except HandelsregisterError as exc:
+            logger.debug("Could not preflight network plan access: %s", exc)
+            return None
+        if not isinstance(account, dict) or "subscription" not in account:
+            return None
+        subscription = account.get("subscription")
+        if subscription is None:
+            return False
+        if not isinstance(subscription, dict):
+            return None
+        plan = subscription.get("plan")
+        if not isinstance(plan, str) or not plan.strip():
+            return None
+        return plan.strip().lower() in {"pro", "max"}
+
+    def _require_network_subscription(self) -> None:
+        if self._network_subscription_access() is not False:
+            return
+        message = (
+            "The 'network' feature requires an active Pro or Max subscription."
+        )
+        raise SubscriptionRequiredError(
+            message,
+            status_code=403,
+            payload={
+                "error": "subscription_required",
+                "meta": {
+                    "message": message,
+                    "required_plans": ["pro", "max"],
+                    "blocked_features": ["network"],
+                    "request_credit_cost": 0,
+                },
+            },
+        )
+
     def fetch_organization(
         self,
         q: str,
@@ -652,7 +707,8 @@ class Handelsregister:
                 balance_sheet_accounts, profit_and_loss_account,
                 annual_financial_statements, annual_financial_statements__html,
                 insolvency_publications, news, website_content,
-                shareholders, ubos, shareholdings, mergers_and_acquisitions
+                shareholders, ubos, shareholdings, mergers_and_acquisitions,
+                network
 
         :param ai_search: Pass ``"on-default"`` to enable AI-based search.
         :param realtime_mode: Pass ``"handelsregister-default"`` to enable live
@@ -707,6 +763,12 @@ class Handelsregister:
         if use_cache and cache_key in self._cache:
             logger.debug("Returning cached result for %s", q)
             return self._cache[cache_key]
+
+        # The service currently omits ``network`` silently for accounts below
+        # Pro, returning a billable base profile instead of the documented 403.
+        # A free account read lets the SDK fail clearly before that charge.
+        if "network" in normalized_features:
+            self._require_network_subscription()
 
         data = self._request("fetch-organization", params=params)
 
@@ -774,6 +836,9 @@ class Handelsregister:
         limit: int = 10,
         filters: Optional[Union[Mapping[str, Any], Any]] = None,
         ai_mode: Optional[str] = None,
+        sort: Optional[Union[str, Enum]] = None,
+        order: Optional[Union[str, Enum]] = None,
+        match_context: Optional[bool] = None,
         **kwargs,
     ) -> Dict[str, Any]:
         """
@@ -781,7 +846,7 @@ class Handelsregister:
 
         Either ``q`` or ``filters`` must be supplied.
 
-        :param q: Optional search query (min. 2 characters).
+        :param q: Optional search query (2-500 characters).
         :param skip: Pagination offset (default 0).
         :param limit: Results per page (default 10, max
                       ``SEARCH_ORGANIZATIONS_MAX_LIMIT``).
@@ -789,6 +854,11 @@ class Handelsregister:
                         location, register, employee and financial range filters.
                         Objects exposing ``to_dict()`` are also accepted.
         :param ai_mode: Pass ``"on-default"`` to enable AI-assisted search.
+        :param sort: Documented result sort field, such as ``"revenue"`` or
+                     ``"registration_date"``.
+        :param order: Optional sort direction, ``"asc"`` or ``"desc"``.
+        :param match_context: Include the matching ownership, executive, or
+                              lifecycle values in each result.
         :param kwargs: Additional query parameters supported by the API.
         :return: Parsed JSON response (``{"results": [...], "total": int, ...}``).
         """
@@ -797,6 +867,11 @@ class Handelsregister:
             q = q.strip()
             if q and len(q) < 2:
                 raise ValueError("Parameter 'q' must contain min. 2 characters.")
+            if q and len(q) > SEARCH_ORGANIZATIONS_MAX_QUERY_LENGTH:
+                raise ValueError(
+                    "Parameter 'q' must contain at most "
+                    f"{SEARCH_ORGANIZATIONS_MAX_QUERY_LENGTH} characters."
+                )
             if not q:
                 q = None
         if q is None and not filter_data:
@@ -811,6 +886,15 @@ class Handelsregister:
         if skip is not None and skip < 0:
             raise ValueError("Parameter 'skip' must be >= 0.")
 
+        sort_value = self._normalize_choice("sort", sort, SEARCH_SORT_FIELDS)
+        order_value = self._normalize_choice("order", order, SORT_ORDERS)
+        if match_context is not None and not isinstance(match_context, bool):
+            raise TypeError("Parameter 'match_context' must be a boolean.")
+        if sort_value == "distance" and "location_coordinates" not in filter_data:
+            raise ValueError(
+                "Sort field 'distance' requires filter 'location_coordinates'."
+            )
+
         params: Dict[str, Any] = {
             "skip": skip,
             "limit": limit,
@@ -821,6 +905,12 @@ class Handelsregister:
             params["filters"] = json.dumps(filter_data, ensure_ascii=False)
         if ai_mode:
             params["ai_mode"] = ai_mode
+        if sort_value:
+            params["sort"] = sort_value
+        if order_value:
+            params["order"] = order_value
+        if match_context is not None:
+            params["match_context"] = int(match_context)
         for key, value in kwargs.items():
             params[key] = value
 
@@ -831,6 +921,9 @@ class Handelsregister:
             limit,
             self._stable(filter_data),
             ai_mode,
+            sort_value,
+            order_value,
+            match_context,
             tuple(sorted((k, self._stable(v)) for k, v in kwargs.items())),
         )
         if self.cache_enabled and cache_key in self._cache:
@@ -850,6 +943,9 @@ class Handelsregister:
         max_results: Optional[int] = None,
         filters: Optional[Union[Mapping[str, Any], Any]] = None,
         ai_mode: Optional[str] = None,
+        sort: Optional[Union[str, Enum]] = None,
+        order: Optional[Union[str, Enum]] = None,
+        match_context: Optional[bool] = None,
         **kwargs,
     ) -> Iterable[Dict[str, Any]]:
         """
@@ -865,12 +961,15 @@ class Handelsregister:
         request. Iteration is lazy, so requests stop when the caller stops
         consuming results.
 
-        :param q: Optional search query (min. 2 characters).
+        :param q: Optional search query (2-500 characters).
         :param skip: Initial pagination offset (default 0).
         :param page_size: Results requested per API call (default/max 30).
         :param max_results: Optional maximum number of results to yield.
         :param filters: Search filter mapping or object exposing ``to_dict()``.
         :param ai_mode: Pass ``"on-default"`` for AI-assisted search.
+        :param sort: Result sort field applied consistently to every page.
+        :param order: Optional ``"asc"`` or ``"desc"`` sort direction.
+        :param match_context: Include matching register-data values per result.
         :param kwargs: Additional query parameters supported by the API.
         :yield: Individual organization result dictionaries.
         """
@@ -894,13 +993,21 @@ class Handelsregister:
             if max_results is not None:
                 request_limit = min(request_limit, max_results - yielded)
 
+            search_kwargs = dict(kwargs)
+            if sort is not None:
+                search_kwargs["sort"] = sort
+            if order is not None:
+                search_kwargs["order"] = order
+            if match_context is not None:
+                search_kwargs["match_context"] = match_context
+
             page = self.search_organizations(
                 q=q,
                 skip=next_skip,
                 limit=request_limit,
                 filters=filters,
                 ai_mode=ai_mode,
-                **kwargs,
+                **search_kwargs,
             )
             results = page.get("results") if isinstance(page, dict) else None
             if not isinstance(results, list):
@@ -928,7 +1035,101 @@ class Handelsregister:
                 return
 
     @staticmethod
-    def _prepare_search_filters(filters: Any) -> Dict[str, Any]:
+    def _normalize_choice(
+        name: str,
+        value: Optional[Union[str, Enum]],
+        allowed: Iterable[str],
+    ) -> Optional[str]:
+        if value is None:
+            return None
+        normalized = value.value if isinstance(value, Enum) else value
+        if not isinstance(normalized, str) or not normalized.strip():
+            raise TypeError(f"Parameter '{name}' must be a non-empty string or enum.")
+        normalized = normalized.strip()
+        allowed_values = tuple(allowed)
+        if normalized not in allowed_values:
+            raise ValueError(
+                f"Parameter '{name}' must be one of: "
+                + ", ".join(allowed_values)
+                + "."
+            )
+        return normalized
+
+    @classmethod
+    def _filter_json_value(cls, value: Any) -> Any:
+        if isinstance(value, Enum):
+            return value.value
+        if hasattr(value, "to_dict") and callable(value.to_dict):
+            return cls._filter_json_value(value.to_dict())
+        if isinstance(value, Mapping):
+            return {
+                str(key): cls._filter_json_value(item)
+                for key, item in value.items()
+            }
+        if isinstance(value, (list, tuple, set)):
+            return [cls._filter_json_value(item) for item in value]
+        return value
+
+    @staticmethod
+    def _validate_condition_object(group: str, field: str, value: Any) -> None:
+        if not isinstance(value, Mapping):
+            return
+        if not value:
+            raise ValueError(
+                f"Filter '{group}.{field}' condition must not be empty."
+            )
+        allowed_operators = {"gte", "lte", "gt", "lt", "eq", "exists"}
+        unknown = set(value) - allowed_operators
+        if unknown:
+            raise ValueError(
+                f"Filter '{group}.{field}' contains unsupported operators: "
+                + ", ".join(sorted(unknown))
+            )
+        if "exists" in value and not isinstance(value["exists"], bool):
+            raise TypeError(
+                f"Filter '{group}.{field}.exists' must be a boolean."
+            )
+
+    @classmethod
+    def _condition_values(cls, value: Any) -> List[Any]:
+        if isinstance(value, Mapping):
+            values = [item for key, item in value.items() if key != "exists"]
+        elif isinstance(value, (list, tuple, set)):
+            values = list(value)
+        else:
+            values = [value]
+        flattened: List[Any] = []
+        for item in values:
+            if isinstance(item, (list, tuple, set)):
+                flattened.extend(item)
+            else:
+                flattened.append(item)
+        return flattened
+
+    @classmethod
+    def _validate_advanced_filter_group(
+        cls,
+        group: str,
+        value: Any,
+        allowed_fields: Iterable[str],
+    ) -> Dict[str, Any]:
+        if not isinstance(value, Mapping):
+            raise TypeError(f"Filter '{group}' must be an object.")
+        data = dict(value)
+        unknown = set(data) - set(allowed_fields)
+        if unknown:
+            raise ValueError(
+                f"Filter '{group}' contains unsupported fields: "
+                + ", ".join(sorted(unknown))
+            )
+        if not data:
+            raise ValueError(f"Filter '{group}' must not be empty.")
+        for field, condition in data.items():
+            cls._validate_condition_object(group, field, condition)
+        return data
+
+    @classmethod
+    def _prepare_search_filters(cls, filters: Any) -> Dict[str, Any]:
         if filters is None:
             return {}
         if hasattr(filters, "to_dict") and callable(filters.to_dict):
@@ -936,7 +1137,35 @@ class Handelsregister:
         if not isinstance(filters, Mapping):
             raise TypeError("Parameter 'filters' must be a mapping or expose to_dict().")
 
-        data = dict(filters)
+        data = cls._filter_json_value(filters)
+
+        legal_form_code = data.get("legal_form_code")
+        if legal_form_code is not None and (
+            not isinstance(legal_form_code, str) or not legal_form_code.strip()
+        ):
+            raise TypeError("Filter 'legal_form_code' must be one non-empty string.")
+
+        if "active" in data and not isinstance(data["active"], bool):
+            raise TypeError("Filter 'active' must be a boolean.")
+
+        for key, allowed in (
+            ("status", ORGANIZATION_STATUSES),
+            ("legal_form_liability_type", LEGAL_FORM_LIABILITY_TYPES),
+        ):
+            if key in data:
+                cls._normalize_choice(key, data[key], allowed)
+
+        company_size = data.get("company_size_category")
+        if company_size is not None and company_size not in {
+            "micro",
+            "small",
+            "medium",
+            "large",
+        }:
+            raise ValueError(
+                "Filter 'company_size_category' must be one of: "
+                "micro, small, medium, large."
+            )
 
         # The public documentation exposes financial range filters as flat
         # keys. The live search service groups them under ``financial_filters``.
@@ -967,10 +1196,38 @@ class Handelsregister:
         if financial_filters:
             data["financial_filters"] = financial_filters
 
-        # The live API names the employee-based size bucket
-        # ``emp_size_category``. Preserve the documented friendly name.
-        if "company_size_category" in data and "emp_size_category" not in data:
-            data["emp_size_category"] = data.pop("company_size_category")
+        coordinates = data.get("location_coordinates")
+        if coordinates is not None:
+            if not isinstance(coordinates, Mapping):
+                raise TypeError("Filter 'location_coordinates' must be an object.")
+            coordinates = dict(coordinates)
+            if "lat" not in coordinates and "latitude" in coordinates:
+                coordinates["lat"] = coordinates.pop("latitude")
+            if "lon" not in coordinates and "longitude" in coordinates:
+                coordinates["lon"] = coordinates.pop("longitude")
+            unknown = set(coordinates) - {"lat", "lon"}
+            if unknown or set(coordinates) != {"lat", "lon"}:
+                raise ValueError(
+                    "Filter 'location_coordinates' must contain exactly "
+                    "'lat' and 'lon'."
+                )
+            lat = coordinates["lat"]
+            lon = coordinates["lon"]
+            if (
+                isinstance(lat, bool)
+                or not isinstance(lat, (int, float))
+                or not -90 <= lat <= 90
+            ):
+                raise ValueError("Filter coordinate 'lat' must be between -90 and 90.")
+            if (
+                isinstance(lon, bool)
+                or not isinstance(lon, (int, float))
+                or not -180 <= lon <= 180
+            ):
+                raise ValueError(
+                    "Filter coordinate 'lon' must be between -180 and 180."
+                )
+            data["location_coordinates"] = coordinates
 
         distance = data.get("location_max_distance_km")
         if distance is not None:
@@ -979,26 +1236,87 @@ class Handelsregister:
                     "Filter 'location_max_distance_km' requires "
                     "'location_coordinates'."
                 )
-            if not isinstance(distance, (int, float)) or not 1 <= distance <= 100:
+            if (
+                isinstance(distance, bool)
+                or not isinstance(distance, (int, float))
+                or not 1 <= distance <= 100
+            ):
                 raise ValueError(
                     "Filter 'location_max_distance_km' must be between 1 and 100."
                 )
+        elif coordinates is not None:
+            raise ValueError(
+                "Filter 'location_coordinates' requires "
+                "'location_max_distance_km'."
+            )
 
-        values_to_validate = dict(data)
-        if isinstance(data.get("financial_filters"), Mapping):
-            values_to_validate.update(data["financial_filters"])
-        for key, value in values_to_validate.items():
-            if isinstance(value, dict) and (
-                "gte" in value or "lte" in value
-            ):
-                unknown = set(value) - {"gte", "lte"}
-                if unknown:
+        for key, value in financial_filters.items():
+            if not isinstance(value, Mapping) or not value:
+                raise TypeError(
+                    f"Financial range filter '{key}' must be a non-empty object."
+                )
+            unknown = set(value) - {"gte", "lte"}
+            if unknown:
+                raise ValueError(
+                    f"Financial range filter '{key}' contains unsupported keys: "
+                    + ", ".join(sorted(unknown))
+                )
+
+        advanced_groups = {
+            "ownership_filters": {
+                "structure",
+                "owner_managed",
+                "likely_family_owned",
+                "largest_share_ratio",
+                "oldest_owner_birth_date",
+                "youngest_owner_birth_date",
+            },
+            "executive_filters": {
+                "md_oldest_birth_date",
+                "md_youngest_birth_date",
+            },
+            "lifecycle_filters": {
+                "insolvency_active",
+                "insolvency_status",
+                "insolvency_opened_date",
+            },
+        }
+        for group, allowed_fields in advanced_groups.items():
+            if group in data:
+                data[group] = cls._validate_advanced_filter_group(
+                    group,
+                    data[group],
+                    allowed_fields,
+                )
+
+        ownership = data.get("ownership_filters")
+        if isinstance(ownership, Mapping) and "structure" in ownership:
+            for value in cls._condition_values(ownership["structure"]):
+                if value not in OWNERSHIP_STRUCTURES:
                     raise ValueError(
-                        f"Range filter '{key}' contains unsupported keys: "
-                        + ", ".join(sorted(unknown))
+                        "Filter 'ownership_filters.structure' contains an "
+                        f"unsupported value: {value!r}."
                     )
-                if not value:
-                    raise ValueError(f"Range filter '{key}' must not be empty.")
+        if isinstance(ownership, Mapping) and "largest_share_ratio" in ownership:
+            for value in cls._condition_values(ownership["largest_share_ratio"]):
+                if (
+                    isinstance(value, bool)
+                    or not isinstance(value, (int, float))
+                    or not 0 <= value <= 1
+                ):
+                    raise ValueError(
+                        "Filter 'ownership_filters.largest_share_ratio' values "
+                        "must be between 0 and 1."
+                    )
+
+        lifecycle = data.get("lifecycle_filters")
+        if isinstance(lifecycle, Mapping) and "insolvency_status" in lifecycle:
+            for value in cls._condition_values(lifecycle["insolvency_status"]):
+                if value not in INSOLVENCY_STATUSES:
+                    raise ValueError(
+                        "Filter 'lifecycle_filters.insolvency_status' contains "
+                        f"an unsupported value: {value!r}."
+                    )
         return data
 
     def fetch_organization_df(self, *args, **kwargs):
