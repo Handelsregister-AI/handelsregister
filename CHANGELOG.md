@@ -2,6 +2,29 @@
 
 All notable changes to the Python package are documented here.
 
+## 0.8.0 - 2026-08-14
+
+- Add the Pro/Max `network` organization feature, typed graph nodes and
+  connections, and `Company.network`.
+- Add first-class organization-search sorting, ordering, and match-context
+  parameters, including automatic pagination support.
+- Add typed ownership, executive, and lifecycle filter builders with all
+  documented comparison and existence operators.
+- Add organization-status, liability, ownership-structure, insolvency-status,
+  search-sort, and sort-order enums.
+- Align search validation with the current API: queries are limited to 500
+  characters, legal-form filters accept one string, and geo filters use
+  `{lat, lon}`. Legacy `{latitude, longitude}` SDK input is normalized for
+  backward compatibility.
+- Update the CLI, README, unit tests, and live API coverage for the new
+  organization and search capabilities.
+- Prefer human-readable plan-denial messages, expose required plans and blocked
+  filters/features on `SubscriptionRequiredError`, and render clean CLI errors
+  without tracebacks.
+- Preflight the plan through the free Account API when `network` is requested,
+  preventing lower-tier accounts from being charged for a silently reduced
+  base profile.
+
 ## 0.7.1 - 2026-08-07
 
 - Fix the AGPLv3 PyPI classifier so release uploads pass PyPI metadata

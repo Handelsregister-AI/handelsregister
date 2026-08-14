@@ -31,6 +31,23 @@ class APIError(HandelsregisterError):
     def detail(self) -> Any:
         return self.payload.get("detail") if isinstance(self.payload, dict) else None
 
+    @property
+    def code(self) -> Optional[str]:
+        """Return the API's stable machine-readable error code, when present."""
+        if not isinstance(self.payload, dict):
+            return None
+        error = self.payload.get("error")
+        candidates = (
+            self.payload.get("code"),
+            self.payload.get("error_code"),
+            error.get("code") if isinstance(error, dict) else error,
+        )
+        for candidate in candidates:
+            if isinstance(candidate, str) and candidate:
+                return candidate
+        return None
+
+
 class InvalidResponseError(HandelsregisterError):
     """Raised when the API response is invalid or unexpected."""
 
@@ -53,6 +70,32 @@ class ForbiddenError(APIError):
 
 class SubscriptionRequiredError(ForbiddenError):
     """Raised when an endpoint requires a paid subscription."""
+
+    @staticmethod
+    def _string_list(value: Any) -> list:
+        if isinstance(value, str):
+            return [value]
+        if not isinstance(value, (list, tuple)):
+            return []
+        return [item for item in value if isinstance(item, str) and item]
+
+    @property
+    def required_plans(self) -> list:
+        """Plan codes accepted by the rejected operation, when supplied."""
+        value = self.meta.get("required_plans")
+        if value is None and isinstance(self.payload, dict):
+            value = self.payload.get("required_plans")
+        return self._string_list(value)
+
+    @property
+    def blocked_filters(self) -> list:
+        """Advanced search filter groups rejected by the current plan."""
+        return self._string_list(self.meta.get("blocked_filters"))
+
+    @property
+    def blocked_features(self) -> list:
+        """Requested feature names rejected by the current plan."""
+        return self._string_list(self.meta.get("blocked_features"))
 
 
 class NotFoundError(APIError):

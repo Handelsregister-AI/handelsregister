@@ -19,10 +19,71 @@ class OrganizationFeature(str, Enum):
     SHAREHOLDINGS = "shareholdings"
     MERGERS_AND_ACQUISITIONS = "mergers_and_acquisitions"
     WEBSITE_CONTENT = "website_content"
+    NETWORK = "network"
 
 
 class PersonFeature(str, Enum):
     SHAREHOLDINGS = "shareholdings"
+
+
+class OrganizationStatus(str, Enum):
+    ACTIVE = "ACTIVE"
+    INACTIVE = "INACTIVE"
+    TERMINATED = "TERMINATED"
+    DISSOLVED = "DISSOLVED"
+    INSOLVENT = "INSOLVENT"
+
+
+class LegalFormLiabilityType(str, Enum):
+    LIMITED = "limited"
+    UNLIMITED = "unlimited"
+    MIXED = "mixed"
+
+
+class OwnershipStructure(str, Enum):
+    SOLE_PERSON = "sole_person"
+    PARTNERS = "partners"
+    SOLE_COMPANY = "sole_company"
+    FAMILY = "family"
+    FRAGMENTED = "fragmented"
+    CORPORATE_GROUP = "corporate_group"
+
+
+class InsolvencyStatus(str, Enum):
+    OPENED = "opened"
+    PROVISIONAL = "provisional"
+    DISCONTINUED = "discontinued"
+    CONCLUDED = "concluded"
+    REJECTED_NO_ASSETS = "rejected_no_assets"
+    PLAN_MONITORING = "plan_monitoring"
+    OPENING_RESCINDED = "opening_rescinded"
+
+
+class SearchSort(str, Enum):
+    RELEVANCE = "relevance"
+    REGISTRATION_DATE = "registration_date"
+    FINANCIAL_YEAR = "financial_year"
+    REVENUE = "revenue"
+    PROFIT = "profit"
+    EMPLOYEES = "employees"
+    TOTAL_ASSETS = "total_assets"
+    EQUITY = "equity"
+    LIABILITIES = "liabilities"
+    CASH = "cash"
+    EQUITY_RATIO = "equity_ratio"
+    SHARE_CAPITAL = "share_capital"
+    LAST_ACTIVITY = "last_activity"
+    LARGEST_SHARE_RATIO = "largest_share_ratio"
+    MANAGEMENT_SIZE = "management_size"
+    MD_OLDEST_BIRTH_DATE = "md_oldest_birth_date"
+    MD_YOUNGEST_BIRTH_DATE = "md_youngest_birth_date"
+    FB_ENTITY_ID = "fb_entity_id"
+    DISTANCE = "distance"
+
+
+class SortOrder(str, Enum):
+    ASC = "asc"
+    DESC = "desc"
 
 
 class DocumentType(str, Enum):
@@ -82,6 +143,14 @@ class WebhookEventType(str, Enum):
 
 ORGANIZATION_FEATURES = tuple(feature.value for feature in OrganizationFeature)
 PERSON_FEATURES = tuple(feature.value for feature in PersonFeature)
+ORGANIZATION_STATUSES = tuple(status.value for status in OrganizationStatus)
+LEGAL_FORM_LIABILITY_TYPES = tuple(
+    liability_type.value for liability_type in LegalFormLiabilityType
+)
+OWNERSHIP_STRUCTURES = tuple(structure.value for structure in OwnershipStructure)
+INSOLVENCY_STATUSES = tuple(status.value for status in InsolvencyStatus)
+SEARCH_SORT_FIELDS = tuple(sort.value for sort in SearchSort)
+SORT_ORDERS = tuple(order.value for order in SortOrder)
 DOCUMENT_TYPES = tuple(document_type.value for document_type in DocumentType)
 SIGNAL_TOPICS = tuple(topic.value for topic in SignalTopic)
 MONITOR_STATUSES = tuple(status.value for status in MonitorStatus)
@@ -102,6 +171,7 @@ AI_SEARCH_ON = "on-default"
 REALTIME_MODE_HANDELSREGISTER = "handelsregister-default"
 SEARCH_AI_MODE_ON = "on-default"
 SEARCH_ORGANIZATIONS_MAX_LIMIT = 30
+SEARCH_ORGANIZATIONS_MAX_QUERY_LENGTH = 500
 
 REALTIME_INCOMPATIBLE_FEATURES = frozenset(
     {

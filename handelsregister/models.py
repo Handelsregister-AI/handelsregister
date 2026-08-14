@@ -1,7 +1,8 @@
 """Lossless convenience models for nested handelsregister.ai response data."""
 
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional
+from enum import Enum
+from typing import Any, Dict, List, Mapping, Optional
 
 
 def _dict(value: Any) -> Dict[str, Any]:
@@ -16,6 +17,19 @@ def _strings(value: Any) -> List[str]:
     if isinstance(value, str):
         return [value]
     return [item for item in _list(value) if isinstance(item, str)]
+
+
+def _filter_value(value: Any) -> Any:
+    """Serialize nested filter builders and enums without losing raw values."""
+    if isinstance(value, Enum):
+        return value.value
+    if hasattr(value, "to_dict") and callable(value.to_dict):
+        return value.to_dict()
+    if isinstance(value, Mapping):
+        return {key: _filter_value(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple, set)):
+        return [_filter_value(item) for item in value]
+    return value
 
 
 def localized_text(value: Any, language: str = "en") -> str:
@@ -57,6 +71,86 @@ class RangeFilter:
 
 
 @dataclass
+class FilterCondition:
+    """Advanced search condition supporting comparison and existence operators."""
+
+    gte: Any = None
+    lte: Any = None
+    gt: Any = None
+    lt: Any = None
+    eq: Any = None
+    exists: Optional[bool] = None
+
+    def to_dict(self) -> Dict[str, Any]:
+        result: Dict[str, Any] = {}
+        for key, value in self.__dict__.items():
+            if value is not None:
+                result[key] = _filter_value(value)
+        return result
+
+
+@dataclass
+class LocationCoordinates:
+    """WGS84 center point for an organization radius search."""
+
+    lat: float
+    lon: float
+
+    def to_dict(self) -> Dict[str, float]:
+        return {"lat": self.lat, "lon": self.lon}
+
+
+@dataclass
+class OwnershipFilters:
+    """Pro/Max ownership and succession filters."""
+
+    structure: Any = None
+    owner_managed: Any = None
+    likely_family_owned: Any = None
+    largest_share_ratio: Any = None
+    oldest_owner_birth_date: Any = None
+    youngest_owner_birth_date: Any = None
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            key: _filter_value(value)
+            for key, value in self.__dict__.items()
+            if value is not None
+        }
+
+
+@dataclass
+class ExecutiveFilters:
+    """Pro/Max active managing-director age filters."""
+
+    md_oldest_birth_date: Any = None
+    md_youngest_birth_date: Any = None
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            key: _filter_value(value)
+            for key, value in self.__dict__.items()
+            if value is not None
+        }
+
+
+@dataclass
+class LifecycleFilters:
+    """Pro/Max insolvency lifecycle filters."""
+
+    insolvency_active: Any = None
+    insolvency_status: Any = None
+    insolvency_opened_date: Any = None
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            key: _filter_value(value)
+            for key, value in self.__dict__.items()
+            if value is not None
+        }
+
+
+@dataclass
 class SearchFilters:
     """Typed builder covering every documented organization-search filter."""
 
@@ -66,6 +160,8 @@ class SearchFilters:
     industry_code: Any = None
     industry_scheme: Optional[str] = None
     active: Optional[bool] = None
+    status: Any = None
+    legal_form_liability_type: Any = None
 
     postal_code: Optional[str] = None
     city: Optional[str] = None
@@ -92,14 +188,16 @@ class SearchFilters:
     pl_net_income: Any = None
     pl_ebit: Any = None
 
+    ownership_filters: Any = None
+    executive_filters: Any = None
+    lifecycle_filters: Any = None
+
     def to_dict(self) -> Dict[str, Any]:
         data: Dict[str, Any] = {}
         for key, value in self.__dict__.items():
             if value is None:
                 continue
-            if isinstance(value, RangeFilter):
-                value = value.to_dict()
-            data[key] = value
+            data[key] = _filter_value(value)
         return data
 
 
@@ -493,6 +591,148 @@ class MergersAndAcquisitions:
     @property
     def by_category(self) -> Dict[str, Any]:
         return _dict(self.summary.get("by_category"))
+
+    def as_dict(self) -> Dict[str, Any]:
+        return self.raw
+
+
+@dataclass
+class NetworkNodeReference:
+    """Compact node reference embedded in a network connection."""
+
+    raw: Dict[str, Any] = field(default_factory=dict)
+
+    @property
+    def node_id(self) -> str:
+        return self.raw.get("node_id", "")
+
+    @property
+    def type(self) -> str:
+        return self.raw.get("type", "")
+
+    @property
+    def name(self) -> str:
+        return self.raw.get("name", "")
+
+    def as_dict(self) -> Dict[str, Any]:
+        return self.raw
+
+
+@dataclass
+class NetworkNode(NetworkNodeReference):
+    """One organization or person in an organization relationship graph."""
+
+    @property
+    def entity_id(self) -> str:
+        return self.raw.get("entity_id", "")
+
+    @property
+    def depth(self) -> int:
+        value = self.raw.get("depth", 0)
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return 0
+
+    @property
+    def is_root(self) -> bool:
+        return self.raw.get("is_root") is True
+
+
+@dataclass
+class NetworkConnection:
+    """A typed, lossless relationship between two network nodes."""
+
+    raw: Dict[str, Any] = field(default_factory=dict)
+
+    @property
+    def source(self) -> NetworkNodeReference:
+        return NetworkNodeReference(raw=_dict(self.raw.get("source")))
+
+    @property
+    def target(self) -> NetworkNodeReference:
+        return NetworkNodeReference(raw=_dict(self.raw.get("target")))
+
+    @property
+    def connection_type(self) -> str:
+        return self.raw.get("connection_type", "")
+
+    @property
+    def label(self) -> str:
+        return self.raw.get("label", "")
+
+    @property
+    def role(self) -> Dict[str, Any]:
+        return _dict(self.raw.get("role"))
+
+    def role_name(self, language: str = "en") -> str:
+        return localized_text(self.role, language)
+
+    @property
+    def start_date(self) -> Optional[str]:
+        return self.raw.get("start_date")
+
+    @property
+    def end_date(self) -> Optional[str]:
+        return self.raw.get("end_date")
+
+    @property
+    def is_current(self) -> Optional[bool]:
+        return self.raw.get("is_current")
+
+    @property
+    def depth(self) -> int:
+        value = self.raw.get("depth", 0)
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return 0
+
+    def as_dict(self) -> Dict[str, Any]:
+        return self.raw
+
+
+@dataclass
+class OrganizationNetwork:
+    """Relationship graph returned by the ``network`` organization feature."""
+
+    depth: int = 0
+    nodes: List[NetworkNode] = field(default_factory=list)
+    connections: List[NetworkConnection] = field(default_factory=list)
+    raw: Dict[str, Any] = field(default_factory=dict)
+
+    @classmethod
+    def from_payload(cls, payload: Any) -> "OrganizationNetwork":
+        data = _dict(payload)
+        depth = data.get("depth", 0)
+        try:
+            depth = int(depth)
+        except (TypeError, ValueError):
+            depth = 0
+        return cls(
+            depth=depth,
+            nodes=[
+                NetworkNode(raw=item)
+                for item in _list(data.get("nodes"))
+                if isinstance(item, dict)
+            ],
+            connections=[
+                NetworkConnection(raw=item)
+                for item in _list(data.get("connections"))
+                if isinstance(item, dict)
+            ],
+            raw=data,
+        )
+
+    def __bool__(self) -> bool:
+        return bool(self.nodes or self.connections)
+
+    @property
+    def root(self) -> Optional[NetworkNode]:
+        for node in self.nodes:
+            if node.is_root:
+                return node
+        return None
 
     def as_dict(self) -> Dict[str, Any]:
         return self.raw
