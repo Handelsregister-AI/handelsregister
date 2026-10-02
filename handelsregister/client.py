@@ -707,8 +707,17 @@ class Handelsregister:
                 balance_sheet_accounts, profit_and_loss_account,
                 annual_financial_statements, annual_financial_statements__html,
                 insolvency_publications, news, website_content,
-                shareholders, ubos, shareholdings, mergers_and_acquisitions,
+                shareholders, shareholders_deep, ubos, shareholdings, mergers_and_acquisitions,
                 network
+
+        ``shareholders_deep`` is Max-only (+80 credits when current entries
+        are returned). The service ignores it on other plans. Capital history
+        is included in the base response without a feature flag.
+
+        Financial years include ``_provenance`` on every plan. On Max,
+        ``balance_sheet_accounts`` and ``profit_and_loss_account`` may also
+        include ``activity_statements`` within each year. No extra flag or
+        surcharge is needed; these features each cost 3 credits on all plans.
 
         :param ai_search: Pass ``"on-default"`` to enable AI-based search.
         :param realtime_mode: Pass ``"handelsregister-default"`` to enable live
@@ -2376,9 +2385,66 @@ class Handelsregister:
             if output_type == "csv":
                 df.to_csv(output_file, index=False)
             else:
-                df.to_excel(output_file, index=False)
+                self._write_enrichment_excel(df, output_file)
 
         logger.info("Enriched data written to %s", output_file)
+
+    @staticmethod
+    def _write_enrichment_excel(df, output_file: str) -> None:
+        """Keep large activity JSON intact beyond Excel's per-cell limit.
+
+        Oversized strings are stored in ordered chunks on ``Long values``.
+        Their main-sheet cells contain a JSON reference with the Excel row,
+        column, worksheet name, and number of chunks. Smaller cells retain
+        their existing format.
+        """
+        import pandas as pd
+
+        frame = df.copy()
+        chunks = []
+        for position in range(len(frame)):
+            for column_index, column in enumerate(frame.columns):
+                value = frame.iat[position, column_index]
+                if (
+                    not isinstance(value, str)
+                    or len(value.encode("utf-16-le")) // 2 <= 32767
+                ):
+                    continue
+                # At most 32,000 UTF-16 code units, even for non-BMP text.
+                parts = [
+                    value[start : start + 16000]
+                    for start in range(0, len(value), 16000)
+                ]
+                for part, content in enumerate(parts, start=1):
+                    chunks.append(
+                        {
+                            "row": position + 2,
+                            "column": str(column),
+                            "part": part,
+                            "value": content,
+                        }
+                    )
+                frame.iat[position, column_index] = json.dumps(
+                    {
+                        "_handelsregister_excel_overflow": {
+                            "sheet": "Long values",
+                            "row": position + 2,
+                            "column": str(column),
+                            "chunks": len(parts),
+                        }
+                    },
+                    ensure_ascii=False,
+                )
+        with pd.ExcelWriter(output_file, engine="openpyxl") as writer:
+            frame.to_excel(writer, index=False, sheet_name="Sheet1")
+            if chunks:
+                pd.DataFrame(chunks).to_excel(
+                    writer, index=False, sheet_name="Long values"
+                )
+                # Chunk boundaries can fall before '='. Store chunk content
+                # as literal text, never as an Excel formula.
+                for row in writer.sheets["Long values"].iter_rows(min_row=2):
+                    row[3].data_type = "s"
 
     def enrich_dataframe(
         self,
@@ -2467,11 +2533,14 @@ class Handelsregister:
         """Flatten a single account structure to lines."""
         if isinstance(account, dict) and "name" in account:
             name_dict = account.get("name", {})
-            name = name_dict.get("de") or name_dict.get("en") or name_dict.get("in_report", "")
+            if isinstance(name_dict, dict):
+                name = name_dict.get("de") or name_dict.get("en") or name_dict.get("in_report", "")
+            else:
+                name = str(name_dict or "")
             value = account.get("value")
             line = f"{prefix}{name}: {value}" if value is not None else f"{prefix}{name}"
             lines = [line]
-            for child in account.get("children", []):
+            for child in account.get("children", []) or []:
                 lines.extend(self._flatten_account(child, prefix + "> "))
             return lines
         elif isinstance(account, dict):
@@ -2539,7 +2608,7 @@ class Handelsregister:
             kp_parts = []
             for entry in kpis:
                 year = entry.get("year")
-                metrics = [f"{k}: {v}" for k, v in entry.items() if k != "year" and v is not None]
+                metrics = [f"{k}: {v}" for k, v in entry.items() if k != "year" and not k.startswith("_") and v is not None]
                 kp_parts.append(f"{year}: " + ", ".join(metrics))
             flat["financial_kpi"] = " | ".join(kp_parts)
 
@@ -2557,7 +2626,7 @@ class Handelsregister:
                     accounts.extend(self._flatten_account(accounts_field))
                 else:
                     for k, v in entry.items():
-                        if k != "year":
+                        if k != "year" and not k.startswith("_") and k != "activity_statements":
                             accounts.append(f"{k}: {v}")
                 pla_parts.append(f"{year}: " + "; ".join(accounts))
             flat["profit_and_loss_account"] = " | ".join(pla_parts)
@@ -2576,18 +2645,51 @@ class Handelsregister:
                     accounts.extend(self._flatten_account(accounts_field))
                 else:
                     for k, v in entry.items():
-                        if k != "year":
+                        if k != "year" and not k.startswith("_") and k != "activity_statements":
                             accounts.append(f"{k}: {v}")
                 bs_parts.append(f"{year}: " + "; ".join(accounts))
             flat["balance_sheet_accounts"] = " | ".join(bs_parts)
+
+        # Financial summaries consume their top-level keys. Export their
+        # nested source/activity metadata separately so enrichment retains it.
+        for feature in (
+            "financial_kpi",
+            "balance_sheet_accounts",
+            "profit_and_loss_account",
+        ):
+            rows = result.get(feature)
+            if not isinstance(rows, list):
+                continue
+            for source_key, suffix in (
+                ("_provenance", "provenance"),
+                ("activity_statements", "activity_statements"),
+            ):
+                metadata = [
+                    {"year": row.get("year"), source_key: row[source_key]}
+                    for row in rows
+                    if isinstance(row, dict) and source_key in row
+                ]
+                if metadata:
+                    flat[f"{feature}_{suffix}"] = json.dumps(
+                        metadata,
+                        ensure_ascii=False,
+                        sort_keys=True,
+                        separators=(",", ":"),
+                    )
 
         history = result.get("history")
         if history:
             hist_parts = []
             for h in history:
-                name = (h.get("name", {}).get("en") or h.get("name", {}).get("de") or "").strip()
+                name = (
+                    h.get("name", {}).get("en") or h.get("name", {}).get("de") or ""
+                ).strip()
                 start = h.get("start_date", "")
-                desc = (h.get("description", {}).get("short", {}).get("en") or h.get("description", {}).get("short", {}).get("de") or "").strip()
+                desc = (
+                    h.get("description", {}).get("short", {}).get("en")
+                    or h.get("description", {}).get("short", {}).get("de")
+                    or ""
+                ).strip()
                 parts = [p for p in [name, desc, start] if p]
                 hist_parts.append(" - ".join(parts))
             flat["history"] = " || ".join(hist_parts)

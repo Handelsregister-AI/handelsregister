@@ -15,6 +15,7 @@ class OrganizationFeature(str, Enum):
     ANNUAL_FINANCIAL_STATEMENTS = "annual_financial_statements"
     ANNUAL_FINANCIAL_STATEMENTS_HTML = "annual_financial_statements__html"
     SHAREHOLDERS = "shareholders"
+    SHAREHOLDERS_DEEP = "shareholders_deep"
     UBOS = "ubos"
     SHAREHOLDINGS = "shareholdings"
     MERGERS_AND_ACQUISITIONS = "mergers_and_acquisitions"

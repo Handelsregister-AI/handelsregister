@@ -12,6 +12,8 @@ from .constants import (
     SORT_ORDERS,
 )
 from .exceptions import HandelsregisterError, SubscriptionRequiredError
+from .models import CapitalInfo, FinancialStatement
+from .shareholders import ShareholdersDeep
 
 DEFAULT_FEATURES = [
     "related_persons",
@@ -44,9 +46,151 @@ def parse_query_properties(props: List[str]):
     return mapping
 
 
-def _display_result(client: Handelsregister, result: dict) -> None:
+def _format_financial_value(key: str, value: Any) -> str:
+    metric = key.lower()
+    dimensionless = (
+        metric.endswith(("_ratio", "_margin", "_intensity", "_rate", "_coverage"))
+        or "_to_" in metric
+    )
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        if dimensionless:
+            return f"{value:,.4g}"
+        if metric in {"employees", "year"}:
+            return f"{value:,}"
+        return f"{value:,.2f} €"
+    return "" if value is None else str(value)
+
+
+def _account_display_rows(accounts, prefix=""):
+    rows = []
+    for account in accounts:
+        label = prefix + (account.name_text() or "Unnamed account")
+        rows.append((label, _format_financial_value("amount", account.value)))
+        rows.extend(_account_display_rows(account.children, label + " > "))
+    return rows
+
+
+def _provenance_text(provenance):
+    parts = []
+    if provenance.statement_type:
+        parts.append(provenance.statement_type)
+    if provenance.period_start or provenance.period_end:
+        parts.append(f"{provenance.period_start or '?'}–{provenance.period_end or '?'}")
+    if provenance.exempt_subsidiary is not None:
+        parts.append(
+            f"Exempt subsidiary: {'yes' if provenance.exempt_subsidiary else 'no'}"
+        )
+    if provenance.parent_organization is not None:
+        parent = provenance.parent_organization
+        parts.append(
+            "Parent: "
+            + str(
+                parent.get("name")
+                or parent.get("entity_id")
+                or json.dumps(parent, ensure_ascii=False)
+            )
+        )
+    return "; ".join(parts)
+
+
+def _financial_display(result, financial_year):
+    features = (
+        ("financial_kpi", "KPIs", None),
+        ("balance_sheet_accounts", "Balance sheet", "balance_sheet_entries"),
+        ("profit_and_loss_account", "P&L", "profit_and_loss_entries"),
+    )
+    statements = {}
+    for key, _, _ in features:
+        payload = result.get(key)
+        statements[key] = (
+            [
+                FinancialStatement.from_payload(row)
+                for row in payload
+                if isinstance(row, dict)
+            ]
+            if isinstance(payload, list)
+            else []
+        )
+    years = {
+        row.year for rows in statements.values() for row in rows if row.year is not None
+    }
+    selected_year = (
+        financial_year if financial_year is not None else max(years) if years else None
+    )
+    metrics = []
+    activities = []
+    for key, label, accounts_property in features:
+        for statement in statements[key]:
+            if statement.year != selected_year:
+                continue
+            if accounts_property:
+                metrics.extend(
+                    (label + " > " + name, value)
+                    for name, value in _account_display_rows(
+                        getattr(statement, accounts_property)
+                    )
+                )
+            for metric, value in statement.metrics.items():
+                if value is not None:
+                    name = (
+                        "Balance Sum"
+                        if metric == "active_total"
+                        else metric.replace("_", " ").title()
+                    )
+                    metrics.append((name, _format_financial_value(metric, value)))
+            if statement.provenance:
+                metrics.append(
+                    (label + " source", _provenance_text(statement.provenance))
+                )
+            if accounts_property:
+                for activity in statement.activity_statements:
+                    title = f"Activity {label} {selected_year}: {activity.name_text() or 'Unnamed activity'}"
+                    rows = _account_display_rows(getattr(activity, accounts_property))
+                    rows.insert(
+                        0, ("Activity", activity.name_text() or "Unnamed activity")
+                    )
+                    if activity.name_in_report:
+                        rows.insert(1, ("In report", activity.name_in_report))
+                    if activity.provenance:
+                        rows.insert(
+                            0, ("Source", _provenance_text(activity.provenance))
+                        )
+                    activities.append((title, rows))
+    return selected_year, metrics, activities
+
+
+def _display_result(client: Handelsregister, result: dict, financial_year: Optional[int] = None) -> None:
     """Pretty-print the API result."""
     summary = client._format_flat_result(result)
+    deep = ShareholdersDeep.from_payload(result.get("shareholders_deep"))
+    capital = CapitalInfo.from_payload(result.get("capital")).current
+    selected_year, financial_rows, activity_tables = _financial_display(result, financial_year)
+    shareholder_rows = []
+    for entry in deep.entries:
+        ranges = []
+        for share in entry.ownership.share_ranges:
+            if share.from_number is not None and share.to_number is not None:
+                ranges.append(
+                    str(share.from_number)
+                    if share.from_number == share.to_number
+                    else f"{share.from_number}–{share.to_number}"
+                )
+        name = entry.display_name
+        if entry.holder.type == "JOINT" and entry.holder.members:
+            members = ", ".join(
+                member.name or "Unknown member" for member in entry.holder.members
+            )
+            name += f" ({members})"
+        shareholder_rows.append(
+            (
+                name,
+                entry.role or "",
+                "" if entry.percentage is None else f"{entry.percentage:g}%",
+                ", ".join(ranges),
+                entry.since or "",
+                entry.since_basis or "",
+            )
+        )
 
     if RICH_AVAILABLE:
         console = Console()
@@ -57,6 +201,8 @@ def _display_result(client: Handelsregister, result: dict) -> None:
             profile.add_row("Legal Form", str(result.get("legal_form")))
         if result.get("purpose"):
             profile.add_row("Purpose", str(result.get("purpose")))
+        if capital is not None:
+            profile.add_row("Capital", f"{capital.amount} {capital.currency or ''} ({capital.kind or ''})")
         representation = result.get("representation_scheme") or {}
         active_representation = (
             representation.get("current")
@@ -115,50 +261,33 @@ def _display_result(client: Handelsregister, result: dict) -> None:
             )
             management_table.add_row(name, role)
 
-        # Determine latest financial year
-        years = {
-            *(y.get("year") for y in result.get("financial_kpi", []) if y.get("year")),
-            *(y.get("year") for y in result.get("balance_sheet_accounts", []) if y.get("year")),
-            *(y.get("year") for y in result.get("profit_and_loss_account", []) if y.get("year")),
-        }
         financial_table = None
-        if years:
-            latest = max(years)
-            financial_table = Table(title=f"Financials {latest}")
+        if financial_rows:
+            financial_table = Table(title=f"Financials {selected_year}")
             financial_table.add_column("Metric")
             financial_table.add_column("Value")
-
-            def fmt_value(key: str, val: Any) -> str:
-                if isinstance(val, (int, float)) and key.lower() not in {"employees", "year"}:
-                    return f"{val:,.2f} €"
-                if isinstance(val, (int, float)):
-                    return f"{val:,}"
-                return str(val)
-
-            kpi = next((x for x in result.get("financial_kpi", []) if x.get("year") == latest), {})
-            for k, v in kpi.items():
-                if k != "year" and v is not None:
-                    label = "Balance Sum" if k == "active_total" else k.replace("_", " ").title()
-                    financial_table.add_row(label, fmt_value(k, v))
-
-            bs = next((x for x in result.get("balance_sheet_accounts", []) if x.get("year") == latest), {})
-            acc = bs.get("balance_sheet_accounts") or {}
-            if isinstance(acc, dict):
-                for k, v in acc.items():
-                    financial_table.add_row(k.replace("_", " ").title(), fmt_value(k, v))
-
-            pl = next((x for x in result.get("profit_and_loss_account", []) if x.get("year") == latest), {})
-            pla = pl.get("profit_and_loss_accounts") or pl
-            if isinstance(pla, dict):
-                for k, v in pla.items():
-                    if k != "year" and v is not None:
-                        financial_table.add_row(k.replace("_", " ").title(), fmt_value(k, v))
+            for row in financial_rows:
+                financial_table.add_row(*row)
 
         group_items = [profile]
         if management_table.row_count:
             group_items.append(management_table)
         if financial_table and financial_table.row_count:
             group_items.append(financial_table)
+        for title, rows in activity_tables:
+            activity_table = Table(title=title)
+            activity_table.add_column("Account")
+            activity_table.add_column("Value")
+            for row in rows:
+                activity_table.add_row(*row)
+            group_items.append(activity_table)
+        if shareholder_rows:
+            shareholder_table = Table(title=f"Deep Shareholders ({deep.record.date or deep.record.source or 'current'})")
+            for column in ("Holder", "Role", "Ownership", "Share numbers", "Since", "Since basis"):
+                shareholder_table.add_column(column)
+            for row in shareholder_rows:
+                shareholder_table.add_row(*row)
+            group_items.append(shareholder_table)
 
         ma_data = result.get("mergers_and_acquisitions") or {}
         ma_summary = ma_data.get("summary") if isinstance(ma_data, dict) else {}
@@ -178,6 +307,20 @@ def _display_result(client: Handelsregister, result: dict) -> None:
         console.print("Data provided by [bold]handelsregister.ai[/bold]")
     else:
         print(summary)
+        if financial_rows:
+            print(f"Financials {selected_year}:")
+            for name, value in financial_rows:
+                print(f"{name}: {value}")
+        for title, rows in activity_tables:
+            print(title + ":")
+            for name, value in rows:
+                print(f"{name}: {value}")
+        if capital is not None:
+            print(f"Capital: {capital.amount} {capital.currency or ''} ({capital.kind or ''})")
+        if shareholder_rows:
+            print(f"Deep Shareholders ({deep.record.date or deep.record.source or 'current'}):")
+            for row in shareholder_rows:
+                print(" | ".join(row))
 
 
 def _display_person(result: dict) -> None:
@@ -362,6 +505,10 @@ def _main():
     )
     fetch_parser.add_argument("--ai-search", dest="ai_search")
     fetch_parser.add_argument("--realtime-mode", dest="realtime_mode")
+    fetch_parser.add_argument(
+        "--financial-year", type=int,
+        help="Financial year to display, including Max activity statements (default: latest). Does not change the API request.",
+    )
 
     person_parser = subparsers.add_parser("person", help="Fetch a person profile")
     person_parser.add_argument(
@@ -625,7 +772,7 @@ def _main():
         if output_json:
             print(json.dumps(result, indent=2, ensure_ascii=False))
         else:
-            _display_result(client, result)
+            _display_result(client, result, financial_year=args.financial_year)
     elif args.command == "person":
         if RICH_AVAILABLE:
             console = Console()

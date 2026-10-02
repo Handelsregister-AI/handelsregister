@@ -2,6 +2,37 @@
 
 All notable changes to the Python package are documented here.
 
+## 0.9.0 - 2026-10-02
+
+- Add the Max-only `shareholders_deep` feature and lossless typed models for
+  holders (including joint communities), share ranges, ownership percentages,
+  tenure, historical documents, and changes against the previous list.
+- Add `Company.shareholders_deep`, CLI display, a runnable example, and
+  offline contract coverage. Respect the API's omission on non-Max plans and
+  its null response when no current shareholder data exists.
+- Add `Company.capital_info` for current registered capital and its history,
+  keeping the existing raw `Company.capital` interface.
+- Add typed financial years, provenance, and Max-only activity statements
+  alongside the existing raw financial properties. Preserve provenance and
+  activity statements in enrichment exports and keep metadata out of CLI
+  financial metrics.
+- Display the new financial ratios, margins, rates, and coverage values
+  without a currency suffix.
+- Add typed financial account trees, year-specific balance-sheet/P&L helpers,
+  and separate Max activity-financial helpers. Provenance remains available
+  on every tier through the existing financial features, without an extra flag.
+- Display full activity balance sheets and P&Ls with their own provenance in
+  both CLI output modes; add local `--financial-year` selection.
+- Add an activity-financials example and coverage for account traversal,
+  subsidiary/parent provenance, missing activities, all-tier request behavior,
+  and lossless JSON/CSV/Excel exports.
+- Preserve oversized Excel export values in an ordered `Long values`
+  worksheet with JSON references, preventing silent truncation of large
+  activity datasets at Excel's cell-size limit.
+- Expose the regular shareholder entry's ID, birth date, and localized role.
+- Add an opt-in live deep-shareholder check; the shared live fixture excludes
+  this feature to avoid adding its 80-credit charge to existing test runs.
+
 ## 0.8.0 - 2026-08-14
 
 - Add the Pro/Max `network` organization feature, typed graph nodes and

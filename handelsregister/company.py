@@ -5,11 +5,16 @@ from typing import Dict, Any, Optional, List, Union, Tuple, TypeVar
 from .client import Handelsregister
 from .exceptions import HandelsregisterError
 from .models import (
+    ActivityStatement,
+    CapitalInfo,
+    FinancialStatement,
     MergersAndAcquisitions,
     OrganizationNetwork,
     RelatedPersons,
     RepresentationScheme,
+    localized_text,
 )
+from .shareholders import ShareholdersDeep
 
 logger = logging.getLogger(__name__)
 
@@ -211,6 +216,24 @@ class ShareholderEntry:
         """Return the ownership share expressed as a ratio (0-1)."""
         return self.contribution_ratio
 
+    @property
+    def entity_id(self) -> Optional[str]:
+        return self.shareholder.get("entity_id")
+
+    @property
+    def birth_date(self) -> Optional[str]:
+        return self.shareholder.get("birth_date")
+
+    @property
+    def role(self) -> Dict[str, Any]:
+        """Localized shareholder role as returned by the API."""
+        value = self.raw.get("role")
+        return value if isinstance(value, dict) else {}
+
+    @property
+    def role_name(self) -> str:
+        return localized_text(self.role)
+
 
 @dataclass
 class ShareholderInfo:
@@ -312,6 +335,7 @@ class Company:
                          - "news"
                          - "website_content"
                          - "shareholders"
+                         - "shareholders_deep" (Max only)
                          - "ubos"
                          - "shareholdings"
                          - "mergers_and_acquisitions"
@@ -442,6 +466,11 @@ class Company:
     def capital(self) -> Union[str, Dict[str, Any]]:
         """Get the company capital information."""
         return self._data.get("capital", "")
+
+    @property
+    def capital_info(self) -> CapitalInfo:
+        """Typed current capital and history; ``capital`` retains its raw interface."""
+        return CapitalInfo.from_payload(self._data.get("capital"))
     
     # --------------------------------
     # Address and contact information
@@ -610,6 +639,16 @@ class Company:
     # Shareholder information
     # --------------------------------
     
+    @property
+    def shareholders_deep(self) -> ShareholdersDeep:
+        """Max-only share ranges, holder tenure, historical lists and changes.
+
+        Deep percentages use 0–100; regular shareholder ratios use 0–1.
+        Missing or null blocks produce an empty view; inspect ``data`` to
+        distinguish an omitted feature from a null result.
+        """
+        return ShareholdersDeep.from_payload(self._data.get("shareholders_deep"))
+
     @property
     def shareholders(self) -> ShareholderInfo:
         """Get shareholder information with structured helper objects."""
@@ -828,6 +867,58 @@ class Company:
     # Financial information
     # --------------------------------
     
+    def _financial_entries(self, key: str) -> List[FinancialStatement]:
+        value = self._data.get(key)
+        if not isinstance(value, list):
+            return []
+        return [FinancialStatement.from_payload(item) for item in value if isinstance(item, dict)]
+
+    @property
+    def financial_kpi_entries(self) -> List[FinancialStatement]:
+        """Typed KPI years with plan-dependent metrics and provenance."""
+        return self._financial_entries("financial_kpi")
+
+    @property
+    def balance_sheet_entries(self) -> List[FinancialStatement]:
+        """Typed balance-sheet years, including provenance and activity statements."""
+        return self._financial_entries("balance_sheet_accounts")
+
+    @property
+    def profit_and_loss_entries(self) -> List[FinancialStatement]:
+        """Typed P&L years, including provenance and activity statements."""
+        return self._financial_entries("profit_and_loss_account")
+
+    def get_balance_sheet_entry_for_year(
+        self, year: int
+    ) -> Optional[FinancialStatement]:
+        """Typed balance sheet with all-tier provenance and optional Max activities."""
+        return next(
+            (entry for entry in self.balance_sheet_entries if entry.year == year), None
+        )
+
+    def get_profit_and_loss_entry_for_year(
+        self, year: int
+    ) -> Optional[FinancialStatement]:
+        """Typed P&L with all-tier provenance and optional Max activities."""
+        return next(
+            (entry for entry in self.profit_and_loss_entries if entry.year == year),
+            None,
+        )
+
+    def get_activity_balance_sheets_for_year(
+        self, year: int
+    ) -> List[ActivityStatement]:
+        """Max-only activity balance sheets, in report order; empty when absent."""
+        entry = self.get_balance_sheet_entry_for_year(year)
+        return entry.activity_statements if entry is not None else []
+
+    def get_activity_profit_and_loss_for_year(
+        self, year: int
+    ) -> List[ActivityStatement]:
+        """Max-only activity P&Ls, kept separate from the main organization's P&L."""
+        entry = self.get_profit_and_loss_entry_for_year(year)
+        return entry.activity_statements if entry is not None else []
+
     @property
     def financial_kpi(self) -> List[Dict[str, Any]]:
         """Get the list of financial KPIs by year."""

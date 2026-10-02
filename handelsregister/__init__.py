@@ -78,8 +78,15 @@ from .company import (
 )
 from .person import Person, PersonShareholdings, ShareholdingEntry as PersonShareholdingEntry
 from .models import (
+    ActivityStatement,
+    CapitalHistoryEntry,
+    CapitalInfo,
+    CapitalValue,
     ExecutiveFilters,
     FilterCondition,
+    FinancialAccount,
+    FinancialProvenance,
+    FinancialStatement,
     LifecycleFilters,
     LocationCoordinates,
     MACounterparty,
@@ -99,6 +106,18 @@ from .models import (
     RepresentationSchemeHistoryEntry,
     SearchFilters,
 )
+from .shareholders import (
+    DeepShareholderEntry,
+    DeepShareholderHistorySnapshot,
+    ShareholderAmount,
+    ShareholderChange,
+    ShareholderChanges,
+    ShareholderHolder,
+    ShareholderOwnership,
+    ShareholderRecord,
+    ShareholdersDeep,
+    ShareRange,
+)
 from .cli import main as cli_main
 from .version import __version__
 
@@ -109,6 +128,23 @@ __all__ = [
     "ShareholderInfo",
     "ShareholderEntry",
     "ShareholderHistorySnapshot",
+    "ShareholdersDeep",
+    "DeepShareholderEntry",
+    "DeepShareholderHistorySnapshot",
+    "ShareholderAmount",
+    "ShareholderChange",
+    "ShareholderChanges",
+    "ShareholderHolder",
+    "ShareholderOwnership",
+    "ShareholderRecord",
+    "ShareRange",
+    "CapitalInfo",
+    "CapitalValue",
+    "CapitalHistoryEntry",
+    "FinancialProvenance",
+    "FinancialAccount",
+    "FinancialStatement",
+    "ActivityStatement",
     "UBOInfo",
     "UBOEntry",
     "ShareholdingsInfo",

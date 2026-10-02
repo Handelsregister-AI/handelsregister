@@ -1,0 +1,172 @@
+{
+  "entity_id": "b4a3c2d1e5f697887a6b5c4d3e2f1a0b",
+  "name": "Beispielwerk Analytics GmbH",
+  "shareholders_deep": {
+    "record": {
+      "date": "2025-03-15",
+      "source": "SHAREHOLDER_LIST"
+    },
+    "share_capital": {
+      "value": 50000,
+      "currency": "EUR",
+      "basis": "REPORTED"
+    },
+    "entries": [
+      {
+        "holder": {
+          "entity_id": "d4c3b2a1f6e5a7b8c9d0e1f2a3b4c5d6",
+          "type": "ORGANIZATION",
+          "name": "Beispielwerk Holding GmbH",
+          "legal_form": "GmbH",
+          "status": "ACTIVE",
+          "city": "München",
+          "country": "DEU",
+          "registration": {
+            "court": "München",
+            "register_type": "HRB",
+            "register_number": "12345"
+          },
+          "registration_text": null
+        },
+        "role": "SHAREHOLDER",
+        "ownership": {
+          "percentage": 75,
+          "percentage_basis": "REPORTED",
+          "nominal_amount": {
+            "value": 37500,
+            "currency": "EUR"
+          },
+          "share_count": 2,
+          "share_ranges": [
+            {
+              "from": 2,
+              "to": 2,
+              "count": 1,
+              "nominal_value": {
+                "value": 12500,
+                "currency": "EUR"
+              }
+            },
+            {
+              "from": 3,
+              "to": 3,
+              "count": 1,
+              "nominal_value": {
+                "value": 25000,
+                "currency": "EUR"
+              }
+            }
+          ]
+        },
+        "since": "2025-03-15",
+        "since_basis": "ENTRY_RECORDED"
+      },
+      {
+        "holder": {
+          "entity_id": "f1e2d3c4b5a69788a7b6c5d4e3f2a1b0",
+          "type": "PERSON",
+          "name": "Max Mustermann",
+          "birth_date": "1985-07-14",
+          "city": "München",
+          "country": "DEU"
+        },
+        "role": "SHAREHOLDER",
+        "ownership": {
+          "percentage": 25,
+          "percentage_basis": "REPORTED",
+          "nominal_amount": {
+            "value": 12500,
+            "currency": "EUR"
+          },
+          "share_count": 1,
+          "share_ranges": [
+            {
+              "from": 1,
+              "to": 1,
+              "count": 1,
+              "nominal_value": {
+                "value": 12500,
+                "currency": "EUR"
+              }
+            }
+          ]
+        },
+        "since": "2019-06-03",
+        "since_basis": "EARLIEST_RECORD"
+      }
+    ],
+    "history": [
+      {
+        "record": {
+          "date": "2019-06-03",
+          "source": "SHAREHOLDER_LIST"
+        },
+        "share_capital": {
+          "value": 25000,
+          "currency": "EUR",
+          "basis": "REPORTED"
+        },
+        "entries": [
+          {
+            "holder": {
+              "entity_id": "f1e2d3c4b5a69788a7b6c5d4e3f2a1b0",
+              "type": "PERSON",
+              "name": "Max Mustermann",
+              "birth_date": "1985-07-14",
+              "city": "München",
+              "country": null
+            },
+            "role": "SHAREHOLDER",
+            "ownership": {
+              "percentage": 100,
+              "percentage_basis": "REPORTED",
+              "nominal_amount": {
+                "value": 25000,
+                "currency": "EUR"
+              },
+              "share_count": 2,
+              "share_ranges": [
+                {
+                  "from": 1,
+                  "to": 2,
+                  "count": 2,
+                  "nominal_value": {
+                    "value": 12500,
+                    "currency": "EUR"
+                  }
+                }
+              ]
+            },
+            "since": "2019-06-03",
+            "since_basis": "EARLIEST_RECORD"
+          }
+        ]
+      }
+    ],
+    "changes": {
+      "compared_to": "2019-06-03",
+      "joined": [
+        {
+          "holder": {
+            "entity_id": "d4c3b2a1f6e5a7b8c9d0e1f2a3b4c5d6",
+            "type": "ORGANIZATION",
+            "name": "Beispielwerk Holding GmbH"
+          },
+          "percentage": 75
+        }
+      ],
+      "left": [],
+      "changed": [
+        {
+          "holder": {
+            "entity_id": "f1e2d3c4b5a69788a7b6c5d4e3f2a1b0",
+            "type": "PERSON",
+            "name": "Max Mustermann"
+          },
+          "percentage_before": 100,
+          "percentage_after": 25
+        }
+      ]
+    }
+  }
+}

@@ -2,7 +2,7 @@
 
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, Dict, List, Mapping, Optional
+from typing import Any, Dict, Iterator, List, Mapping, Optional, Union
 
 
 def _dict(value: Any) -> Dict[str, Any]:
@@ -52,6 +52,290 @@ def localized_text(value: Any, language: str = "en") -> str:
             if text:
                 return text
     return value.get("long") or value.get("short") or ""
+
+
+@dataclass
+class CapitalValue:
+    """Registered capital with an open-ended kind and optional reported change.
+
+    ``change_amount`` is unsigned and is not necessarily the difference from
+    the preceding capital value. It must not be interpreted as a signed delta.
+    """
+
+    amount: Optional[Union[int, float]] = None
+    currency: Optional[str] = None
+    kind: Optional[str] = None
+    change_amount: Optional[Dict[str, Any]] = None
+    raw: Dict[str, Any] = field(default_factory=dict)
+
+    @classmethod
+    def from_payload(cls, payload: Any) -> "CapitalValue":
+        data = _dict(payload)
+        return cls(
+            amount=data.get("amount"),
+            currency=data.get("currency"),
+            kind=data.get("kind"),
+            change_amount=(
+                data["change_amount"]
+                if isinstance(data.get("change_amount"), dict)
+                else None
+            ),
+            raw=data,
+        )
+
+    def as_dict(self) -> Dict[str, Any]:
+        return self.raw
+
+
+@dataclass
+class CapitalHistoryEntry:
+    value: Optional[CapitalValue] = None
+    effective_from: Optional[str] = None
+    effective_to: Optional[str] = None
+    raw: Dict[str, Any] = field(default_factory=dict)
+
+    @classmethod
+    def from_payload(cls, payload: Any) -> "CapitalHistoryEntry":
+        data = _dict(payload)
+        return cls(
+            value=(
+                CapitalValue.from_payload(data["value"])
+                if isinstance(data.get("value"), dict)
+                else None
+            ),
+            effective_from=data.get("effective_from"),
+            effective_to=data.get("effective_to"),
+            raw=data,
+        )
+
+    def as_dict(self) -> Dict[str, Any]:
+        return self.raw
+
+
+@dataclass
+class CapitalInfo:
+    """Current registered capital and its history, included in the base lookup."""
+
+    current: Optional[CapitalValue] = None
+    history: List[CapitalHistoryEntry] = field(default_factory=list)
+    raw: Dict[str, Any] = field(default_factory=dict)
+
+    @classmethod
+    def from_payload(cls, payload: Any) -> "CapitalInfo":
+        data = _dict(payload)
+        return cls(
+            current=(
+                CapitalValue.from_payload(data["current"])
+                if isinstance(data.get("current"), dict)
+                else None
+            ),
+            history=[
+                CapitalHistoryEntry.from_payload(item)
+                for item in _list(data.get("history"))
+                if isinstance(item, dict)
+            ],
+            raw=data,
+        )
+
+    def __bool__(self) -> bool:
+        return self.current is not None or bool(self.history)
+
+    def as_dict(self) -> Dict[str, Any]:
+        return self.raw
+
+
+@dataclass
+class FinancialProvenance:
+    """All-tier source metadata for financial years and activity statements."""
+
+    statement_type: Optional[str] = None
+    period_start: Optional[str] = None
+    period_end: Optional[str] = None
+    exempt_subsidiary: Optional[bool] = None
+    parent_organization: Optional[Dict[str, Any]] = None
+    raw: Dict[str, Any] = field(default_factory=dict)
+
+    @classmethod
+    def from_payload(cls, payload: Any) -> "FinancialProvenance":
+        data = _dict(payload)
+        return cls(
+            statement_type=data.get("statement_type"),
+            period_start=data.get("period_start"),
+            period_end=data.get("period_end"),
+            exempt_subsidiary=data.get("exempt_subsidiary"),
+            parent_organization=(
+                data["parent_organization"]
+                if isinstance(data.get("parent_organization"), dict)
+                else None
+            ),
+            raw=data,
+        )
+
+    def as_dict(self) -> Dict[str, Any]:
+        return self.raw
+
+    def __bool__(self) -> bool:
+        return bool(self.raw)
+
+
+@dataclass
+class FinancialAccount:
+    """One account in a financial tree, preserving labels and unknown fields."""
+
+    name: Any = field(default_factory=dict)
+    value: Any = None
+    children: List["FinancialAccount"] = field(default_factory=list)
+    raw: Dict[str, Any] = field(default_factory=dict)
+
+    @classmethod
+    def from_payload(cls, payload: Any) -> "FinancialAccount":
+        data = _dict(payload)
+        return cls(
+            name=data.get("name", {}),
+            value=data.get("value"),
+            children=cls.from_accounts(data.get("children")),
+            raw=data,
+        )
+
+    @classmethod
+    def from_accounts(cls, payload: Any) -> List["FinancialAccount"]:
+        """Read documented lists and older dictionary account layouts."""
+        if isinstance(payload, dict):
+            if "name" in payload:
+                return [cls.from_payload(payload)]
+            return [
+                cls.from_payload({"name": name, "value": value})
+                for name, value in payload.items()
+            ]
+        return [
+            cls.from_payload(item) for item in _list(payload) if isinstance(item, dict)
+        ]
+
+    def name_text(self, language: str = "en") -> str:
+        return (
+            localized_text(self.name, language)
+            or _dict(self.name).get("in_report")
+            or ""
+        )
+
+    def walk(self) -> Iterator["FinancialAccount"]:
+        """Yield this node and all its descendants in report order."""
+        yield self
+        for child in self.children:
+            yield from child.walk()
+
+    def as_dict(self) -> Dict[str, Any]:
+        return self.raw
+
+
+@dataclass
+class ActivityStatement:
+    """Max-plan accounts for one regulated activity (§ 6b EnWG)."""
+
+    activity: Dict[str, Any] = field(default_factory=dict)
+    balance_sheet_accounts: Any = field(default_factory=list)
+    profit_and_loss_accounts: Any = field(default_factory=list)
+    provenance: FinancialProvenance = field(default_factory=FinancialProvenance)
+    raw: Dict[str, Any] = field(default_factory=dict)
+
+    @classmethod
+    def from_payload(cls, payload: Any) -> "ActivityStatement":
+        data = _dict(payload)
+        return cls(
+            activity=_dict(data.get("activity")),
+            balance_sheet_accounts=data.get("balance_sheet_accounts", []),
+            profit_and_loss_accounts=data.get("profit_and_loss_accounts", []),
+            provenance=FinancialProvenance.from_payload(data.get("_provenance")),
+            raw=data,
+        )
+
+    def name_text(self, language: str = "en") -> str:
+        return (
+            localized_text(self.activity.get("name"), language)
+            or self.name_in_report
+            or ""
+        )
+
+    @property
+    def name_in_report(self) -> Optional[str]:
+        """Original report label, which can differ between balance sheet and P&L."""
+        name = self.activity.get("name")
+        return (
+            name.get("in_report")
+            if isinstance(name, dict)
+            else name
+            if isinstance(name, str)
+            else None
+        )
+
+    @property
+    def balance_sheet_entries(self) -> List[FinancialAccount]:
+        return FinancialAccount.from_accounts(self.balance_sheet_accounts)
+
+    @property
+    def profit_and_loss_entries(self) -> List[FinancialAccount]:
+        return FinancialAccount.from_accounts(self.profit_and_loss_accounts)
+
+    def as_dict(self) -> Dict[str, Any]:
+        return self.raw
+
+
+@dataclass
+class FinancialStatement:
+    """Lossless financial year with metrics, accounts, and source metadata.
+
+    The API's plan-dependent metrics remain available in ``metrics`` without
+    imposing a closed set of metric names.
+    """
+
+    year: Optional[int] = None
+    balance_sheet_accounts: Any = field(default_factory=list)
+    profit_and_loss_accounts: Any = field(default_factory=list)
+    provenance: FinancialProvenance = field(default_factory=FinancialProvenance)
+    activity_statements: List[ActivityStatement] = field(default_factory=list)
+    raw: Dict[str, Any] = field(default_factory=dict)
+
+    @classmethod
+    def from_payload(cls, payload: Any) -> "FinancialStatement":
+        data = _dict(payload)
+        return cls(
+            year=data.get("year"),
+            balance_sheet_accounts=data.get("balance_sheet_accounts", []),
+            profit_and_loss_accounts=data.get("profit_and_loss_accounts", []),
+            provenance=FinancialProvenance.from_payload(data.get("_provenance")),
+            activity_statements=[
+                ActivityStatement.from_payload(item)
+                for item in _list(data.get("activity_statements"))
+                if isinstance(item, dict)
+            ],
+            raw=data,
+        )
+
+    @property
+    def metrics(self) -> Dict[str, Any]:
+        return {
+            key: value
+            for key, value in self.raw.items()
+            if not key.startswith("_")
+            and key
+            not in {
+                "year",
+                "balance_sheet_accounts",
+                "profit_and_loss_accounts",
+                "activity_statements",
+            }
+        }
+
+    @property
+    def balance_sheet_entries(self) -> List[FinancialAccount]:
+        return FinancialAccount.from_accounts(self.balance_sheet_accounts)
+
+    @property
+    def profit_and_loss_entries(self) -> List[FinancialAccount]:
+        return FinancialAccount.from_accounts(self.profit_and_loss_accounts)
+
+    def as_dict(self) -> Dict[str, Any]:
+        return self.raw
 
 
 @dataclass

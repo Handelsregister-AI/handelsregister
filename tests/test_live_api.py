@@ -40,6 +40,7 @@ from handelsregister import (
     SearchFilters,
     SearchSort,
     ShareholderInfo,
+    ShareholdersDeep,
     ShareholdingsInfo,
     UBOInfo,
 )
@@ -49,7 +50,7 @@ COMPANY_QUERY = "KONUX GmbH München"
 COMPANY_ENTITY_ID = "110fe0da2f84c8d3174ec7bfd1f0f15a"
 
 ALL_FEATURES = [
-    feature for feature in ORGANIZATION_FEATURES if feature != "network"
+    feature for feature in ORGANIZATION_FEATURES if feature not in {"network", "shareholders_deep"}
 ]
 
 
@@ -77,6 +78,42 @@ def full_company(live_client):
 
 @pytest.mark.live_api
 class TestFetchOrganization:
+    def test_activity_financials(self, live_client):
+        """Opt-in energy-company lookup; at most 11 credits, Max for activities."""
+        if os.getenv("HANDELSREGISTER_RUN_ACTIVITY_FINANCIALS_TESTS") != "1":
+            pytest.skip("Set HANDELSREGISTER_RUN_ACTIVITY_FINANCIALS_TESTS=1 for energy-company financials")
+        company = Company("Stadtwerke Bad Pyrmont GmbH", client=live_client, features=[
+            OrganizationFeature.BALANCE_SHEET_ACCOUNTS, OrganizationFeature.PROFIT_AND_LOSS_ACCOUNT,
+        ])
+        statements = company.balance_sheet_entries + company.profit_and_loss_entries
+        assert statements
+        for statement in statements:
+            assert statement.provenance.statement_type
+            for activity in statement.activity_statements:
+                assert activity.name_text()
+                assert activity.provenance.statement_type
+                roots = activity.balance_sheet_entries + activity.profit_and_loss_entries
+                assert roots
+                assert all(root.as_dict() == root.raw for root in roots)
+
+    def test_deep_shareholders(self, live_client):
+        """Opt-in Max contract check, up to 85 credits for one fetch."""
+        if os.getenv("HANDELSREGISTER_RUN_DEEP_SHAREHOLDERS_TESTS") != "1":
+            pytest.skip("Set HANDELSREGISTER_RUN_DEEP_SHAREHOLDERS_TESTS=1 for the Max feature")
+        company = Company(COMPANY_ENTITY_ID, client=live_client, features=[OrganizationFeature.SHAREHOLDERS_DEEP])
+        deep = company.shareholders_deep
+        assert isinstance(deep, ShareholdersDeep)
+        if "shareholders_deep" not in company.data:
+            pytest.skip("The API omitted shareholders_deep; a Max plan is required")
+        if company.data["shareholders_deep"] is None:
+            assert not deep
+            return
+        assert deep.as_dict() == company.data["shareholders_deep"]
+        for entry in deep.entries:
+            assert entry.holder.type
+            if entry.percentage is not None:
+                assert 0 <= entry.percentage <= 100
+
     def test_basic_fetch(self, live_client):
         result = live_client.fetch_organization(q=COMPANY_QUERY)
         assert isinstance(result, dict)

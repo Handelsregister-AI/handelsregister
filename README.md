@@ -9,6 +9,7 @@ A modern Python client for the [Handelsregister.ai](https://handelsregister.ai) 
 ## Features
 
 - **Company lookup** — `fetch-organization` with configurable feature flags
+- **Deep shareholders** — Max-only share numbers, joint holders, tenure, and list changes
 - **Person profiles** — `fetch-person` (Handelsregister roles + web data)
 - **Search** — query or filters-only search with geo, registry, size, and financial filters
 - **Signals** — cursor-paginated company changes with topic, company, and date filters
@@ -860,7 +861,8 @@ $ handelsregister webhooks events
 | `insolvency_publications`            | Insolvency court publications                                 |
 | `news`                               | News articles about the company                               |
 | `website_content`                    | Company website as structured Markdown (AI mode, 0 credits)   |
-| `shareholders` (beta)                | Shareholders with capital contribution and ratio              |
+| `shareholders` (beta)                | Shareholders with capital contribution, ratio, roles, and history |
+| `shareholders_deep` (Max)            | Individual share ranges, joint holders, tenure, history, and changes |
 | `ubos` (beta)                        | Ultimate beneficial owners (resolved / unresolved / coverage) |
 | `shareholdings` (beta)               | Outbound shareholdings (what the company owns in others)      |
 | `mergers_and_acquisitions` (beta)     | M&A transactions, succession, agreements, and control         |
@@ -872,6 +874,12 @@ When `network` is requested, the SDK checks the account's subscription through
 the free Account API before making the billable organization request. Accounts
 below Pro receive `SubscriptionRequiredError` with the accepted plans instead
 of a silently reduced base profile.
+
+`shareholders_deep` costs 80 credits in addition to the 5-credit lookup, only
+when current entries are returned. The API ignores this feature on plans other
+than Max (the response key is absent). With no current shareholder information,
+the key is `null`; an empty `entries` array also incurs no feature charge.
+The SDK follows this behavior without a subscription preflight.
 
 `realtime_mode="handelsregister-default"` forces a live Handelsregister lookup (+10 credits), independent of the feature flags above.
 It cannot be combined with `related_persons` or `publications`.
@@ -892,6 +900,8 @@ company.status
 company.is_active
 company.purpose
 company.representation_scheme          # RepresentationScheme
+company.capital                         # original raw capital payload
+company.capital_info                    # CapitalInfo: current + history
 
 # Registration
 company.registration_number
@@ -909,6 +919,9 @@ company.email
 
 # Financial
 company.financial_kpi
+company.financial_kpi_entries            # typed years, metrics, provenance
+company.balance_sheet_entries           # typed years + activity statements
+company.profit_and_loss_entries          # typed years + activity statements
 company.financial_years
 company.balance_sheet_accounts
 company.profit_and_loss_account
@@ -917,6 +930,10 @@ company.annual_financial_statements_html
 company.get_financial_kpi_for_year(2023)
 company.get_balance_sheet_for_year(2023)
 company.get_profit_and_loss_for_year(2023)
+company.get_balance_sheet_entry_for_year(2023)  # typed year or None
+company.get_profit_and_loss_entry_for_year(2023)
+company.get_activity_balance_sheets_for_year(2023)  # Max: list[ActivityStatement]
+company.get_activity_profit_and_loss_for_year(2023)
 company.get_annual_financial_statement_for_year(2023)  # Markdown
 company.get_annual_financial_statement_for_year(2023, html=True)
 
@@ -926,6 +943,7 @@ company.past_related_persons
 company.get_related_persons_by_role("MANAGING_DIRECTOR")
 company.related_person_entries         # typed persons + representation schemes
 company.shareholders           # ShareholderInfo
+company.shareholders_deep      # ShareholdersDeep (Max)
 company.ubos                   # UBOInfo
 company.shareholdings          # ShareholdingsInfo
 company.mergers_and_acquisitions  # MergersAndAcquisitions
@@ -937,6 +955,162 @@ company.insolvency_publications
 company.news
 company.website_content
 ```
+
+### Deep shareholders
+
+Use an organization's `entity_id` as the query to identify it reliably:
+
+```python
+from handelsregister import Company, OrganizationFeature
+
+company = Company(
+    "YOUR_ORGANIZATION_ENTITY_ID",
+    features=[OrganizationFeature.SHAREHOLDERS_DEEP],
+)
+deep = company.shareholders_deep
+print(deep.record.date, deep.record.source)
+if deep.share_capital is not None:
+    print(deep.share_capital.value, deep.share_capital.currency, deep.share_capital.basis)
+
+for entry in deep.entries:
+    print(entry.holder.name, entry.role, entry.percentage)  # percentage: 0–100
+    print(entry.since, entry.since_basis)
+    for shares in entry.ownership.share_ranges:
+        print(shares.from_number, shares.to_number, shares.count)
+        if shares.nominal_value is not None:
+            print(shares.nominal_value.value, shares.nominal_value.currency)
+
+for snapshot in deep.history:
+    print(snapshot.record.date, snapshot.record.source, len(snapshot.entries))
+if deep.changes is not None:
+    print(deep.changes.compared_to)
+    for change in deep.changes.changed:
+        print(change.holder.name, change.percentage_before, change.percentage_after)
+```
+
+`holder.type` can be `ORGANIZATION`, `PERSON`, or `JOINT`. A joint community's
+`holder.members` contains its co-owners; its ownership belongs to the community
+as a whole and is never divided among the members by the SDK. Each entry is a
+document row, so holders can appear multiple times. History preserves printed
+names and row order; changes aggregate by holder as supplied by the API.
+
+Unknown fields remain in `.raw` / `.as_dict()`, unknown enum strings are
+accepted, and unknown amounts, dates, IDs, and percentages remain `None`.
+`changes` can be `None` when there is no previous list or the source is not a
+shareholder list. Register history entries may include `until`.
+`since_basis="EARLIEST_RECORD"` means recorded at least since that date;
+`ENTRY_RECORDED` identifies the recorded start. Deep percentages use **0–100**,
+while regular `company.shareholders.entries[].percentage` remains a **0–1 ratio**.
+Regular entries also expose `entity_id`, `birth_date`, `role`, and `role_name`.
+
+`Company.shareholders_deep` returns an empty view for missing or null blocks;
+inspect `company.data` to distinguish those cases. Every nested model exposes
+the original dictionary through `.as_dict()`.
+
+```bash
+handelsregister fetch YOUR_ORGANIZATION_ENTITY_ID --feature shareholders_deep
+handelsregister fetch json YOUR_ORGANIZATION_ENTITY_ID --feature shareholders_deep
+python examples/shareholders_deep_example.py YOUR_ORGANIZATION_ENTITY_ID
+```
+
+See the [deep shareholder reference](https://dev.handelsregister.ai/de/documentation/data-shareholders-deep)
+for the complete contract.
+
+### Capital history and financial sources
+
+Capital is included in the base response. `company.capital` retains the raw
+interface; `company.capital_info.current` exposes `amount`, `currency`, and
+the open-ended `kind`. Its `.history` entries expose `.value`, `.effective_from`,
+and `.effective_to` (`None` for an ongoing value). A history value's
+`change_amount` is an unsigned reported amount, not necessarily the difference
+between successive values. Infer increases and reductions from the actual
+capital amounts. Companies without registered capital have `current=None`
+and an empty history.
+
+```python
+for year in company.financial_kpi_entries:
+    print(year.year, year.metrics.get("revenue"), year.provenance.statement_type)
+    print(year.provenance.period_start, year.provenance.period_end)
+    print(year.provenance.exempt_subsidiary, year.provenance.parent_organization)
+
+for year in company.balance_sheet_entries:
+    for activity in year.activity_statements:
+        print(activity.name_text("en"), activity.balance_sheet_accounts)
+        print(activity.provenance.statement_type)
+```
+
+Raw financial properties and year helpers retain `_provenance` and all
+plan-dependent metrics. Pro/Max KPIs can include additional metrics such as
+`equity_ratio`, `revenue_per_employee`, and `source_statement_type`; these
+remain accessible in each typed year's `.metrics` without a fixed schema.
+Max balance-sheet and P&L years may also include `activity_statements` for
+regulated energy activities. Each has its own activity label, account tree,
+and provenance. P&L activity accounts use `profit_and_loss_accounts`.
+
+`_provenance` is included on **all tiers**, including the source statement
+type, period, subsidiary-exemption flag, and parent organization when
+applicable. It is metadata within each year, rather than a separate feature
+flag. The `balance_sheet_accounts` and `profit_and_loss_account` features
+each cost **3 credits on every tier**. On Max, their responses also include
+activity statements when available, with no additional flag or surcharge.
+Years without activity statements omit that key; typed activity lists are
+empty in that case.
+
+The year-specific helpers keep the main accounts and activity accounts
+separate. Every activity keeps its own provenance and report label; activity
+names can differ between balance-sheet and P&L reports, so the SDK does not
+merge them by name or add them to the main account totals.
+
+```python
+from handelsregister import Company
+
+company = Company(
+    "Stadtwerke Bad Pyrmont GmbH",
+    features=["balance_sheet_accounts", "profit_and_loss_account"],
+)
+balance = company.get_balance_sheet_entry_for_year(2023)
+if balance is not None:
+    print(balance.provenance.statement_type)  # all tiers
+
+for activity in company.get_activity_balance_sheets_for_year(2023):
+    print(activity.name_text("en"), activity.name_in_report)
+    print(activity.provenance.period_start, activity.provenance.period_end)
+    for root in activity.balance_sheet_entries:
+        for account in root.walk():
+            print(account.name_text("de"), account.value)
+
+for activity in company.get_activity_profit_and_loss_for_year(2023):
+    for root in activity.profit_and_loss_entries:
+        print(root.name_text("en"), root.value)
+```
+
+`FinancialAccount` exposes the original `name`, `value`, `children`, and
+`.as_dict()`. `.walk()` visits every descendant in report order. Existing raw
+account properties remain available. Missing years return `None` from the
+typed year helpers, and `[]` from the activity helpers.
+
+The CLI displays account trees and provenance separately for each activity.
+Use `--financial-year` to select a year locally; this option does not change
+the request or filter JSON output:
+
+```bash
+handelsregister fetch "Stadtwerke Bad Pyrmont GmbH" \
+    --feature balance_sheet_accounts --feature profit_and_loss_account \
+    --financial-year 2023 --ai-search off
+python examples/activity_financials_example.py "Stadtwerke Bad Pyrmont GmbH" --year 2023
+```
+
+Tabular enrichment preserves `capital` and `shareholders_deep` as JSON columns.
+Financial summaries retain their existing columns and add JSON metadata
+columns, when supplied: `<feature>_provenance` and
+`<feature>_activity_statements`, each carrying its year and original payload.
+
+Excel limits cells to 32,767 characters. When an export value exceeds that
+limit, its cell contains a JSON `_handelsregister_excel_overflow` reference.
+The complete text is split across the **Long values** worksheet, with `row`
+(the main-sheet Excel row), `column`, `part`, and `value`. Concatenate the
+matching `value` cells in `part` order before decoding JSON. Small exports
+retain their existing single-cell format; CSV and JSON preserve values directly.
 
 ## `Person` properties
 
