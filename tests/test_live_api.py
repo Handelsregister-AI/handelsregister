@@ -78,6 +78,33 @@ def full_company(live_client):
 
 @pytest.mark.live_api
 class TestFetchOrganization:
+    def test_annual_report_audits(self, live_client):
+        """Opt-in audit contract check; up to 15 credits for both formats."""
+        if os.getenv("HANDELSREGISTER_RUN_AUDIT_TESTS") != "1":
+            pytest.skip("Set HANDELSREGISTER_RUN_AUDIT_TESTS=1 for annual-report audits")
+        company = Company(
+            COMPANY_ENTITY_ID, client=live_client,
+            features=[
+                OrganizationFeature.ANNUAL_FINANCIAL_STATEMENTS,
+                OrganizationFeature.ANNUAL_FINANCIAL_STATEMENTS_HTML,
+            ],
+            financial_years=5,
+        )
+        reports = company.annual_financial_statement_entries
+        html_reports = company.annual_financial_statement_html_entries
+        assert reports and html_reports
+        assert [report.audit.as_dict() if report.audit is not None else None for report in reports] == [
+            report.audit.as_dict() if report.audit is not None else None for report in html_reports
+        ]
+        assert any(report.audit is not None for report in reports)
+        for report in reports + html_reports:
+            assert report.year in company.financial_years
+            assert report.as_dict() == report.raw
+            if report.audit is not None:
+                assert report.audit.as_dict() == report.raw["audit"]
+                if report.audit.auditor is not None:
+                    assert report.audit.auditor.as_dict() == report.raw["audit"]["auditor"]
+
     def test_activity_financials(self, live_client):
         """Opt-in energy-company lookup; at most 11 credits, Max for activities."""
         if os.getenv("HANDELSREGISTER_RUN_ACTIVITY_FINANCIALS_TESTS") != "1":

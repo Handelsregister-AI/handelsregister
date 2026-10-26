@@ -1,6 +1,7 @@
 import argparse
 import json
 import sys
+from collections import Counter
 from typing import List, Optional, Any
 
 from .client import Handelsregister
@@ -12,7 +13,7 @@ from .constants import (
     SORT_ORDERS,
 )
 from .exceptions import HandelsregisterError, SubscriptionRequiredError
-from .models import CapitalInfo, FinancialStatement
+from .models import AnnualFinancialStatement, CapitalInfo, FinancialStatement
 from .shareholders import ShareholdersDeep
 
 DEFAULT_FEATURES = [
@@ -27,12 +28,14 @@ try:
     from rich.console import Console
     from rich.table import Table
     from rich.panel import Panel
+    from rich.text import Text
     from rich.console import Group
     RICH_AVAILABLE = True
 except Exception:  # pragma: no cover - optional dependency
     Console = None
     Table = None
     Panel = None
+    Text = None
     Group = None
     RICH_AVAILABLE = False
 
@@ -93,7 +96,82 @@ def _provenance_text(provenance):
     return "; ".join(parts)
 
 
-def _financial_display(result, financial_year):
+def _annual_reports_for_display(result):
+    """Combine formats for display, consuming only matching HTML copies.
+
+    Full metadata (including the audit) must match. Distinct reports within
+    one format, even in the same year, retain their original order.
+    """
+    reports = []
+    markdown_copies = Counter()
+    for feature in ("annual_financial_statements", "annual_financial_statements__html"):
+        payload = result.get(feature)
+        if not isinstance(payload, list):
+            continue
+        for row in payload:
+            if not isinstance(row, dict):
+                continue
+            identity = json.dumps(
+                {k: v for k, v in row.items() if k not in {"document_md", "document_html"}},
+                sort_keys=True, ensure_ascii=False,
+            )
+            if feature == "annual_financial_statements":
+                markdown_copies[identity] += 1
+            elif markdown_copies[identity]:
+                markdown_copies[identity] -= 1
+                continue
+            reports.append(AnnualFinancialStatement.from_payload(row))
+    return reports
+
+
+def _audit_display(reports, selected_year):
+    tables = []
+    for report in reports:
+        if report.year != selected_year:
+            continue
+        title = f"Annual report audit {report.year or 'Unknown year'}"
+        if report.document_type:
+            title += f": {report.document_type}"
+        rows = []
+
+        def add(label, value):
+            if value is not None and value != "":
+                rows.append((label, str(value)))
+
+        add("Report", report.document_title)
+        add("Published", report.document_date)
+        add("Language", report.language)
+        audit = report.audit
+        if audit is None:
+            add("Audit information", "Not available")
+        else:
+            add("Kind", audit.kind)
+            add("Subject", audit.subject)
+            add("Audited", "Yes" if audit.audited is True else "No" if audit.audited is False else "Unknown")
+            add("Accounting framework", audit.accounting_framework)
+            auditor = audit.auditor
+            if auditor is not None:
+                add("Auditor", auditor.name)
+                add("Auditor type", auditor.type)
+                add("Auditor entity ID", auditor.entity_id)
+                if auditor.network is not None:
+                    add("Network", auditor.network.name)
+                    add("Network key", auditor.network.key)
+                for signatory in auditor.signatories:
+                    name = " ".join(
+                        part for part in (signatory.academic_title, signatory.name) if part
+                    )
+                    if signatory.qualification:
+                        name += f" ({signatory.qualification})"
+                    add("Signatory", name.strip())
+            if audit.signed is not None:
+                add("Signed in", audit.signed.place)
+                add("Signed on", audit.signed.date)
+        tables.append((title, rows))
+    return tables
+
+
+def _financial_display(result, financial_year, annual_reports=None):
     features = (
         ("financial_kpi", "KPIs", None),
         ("balance_sheet_accounts", "Balance sheet", "balance_sheet_entries"),
@@ -114,6 +192,9 @@ def _financial_display(result, financial_year):
     years = {
         row.year for rows in statements.values() for row in rows if row.year is not None
     }
+    if annual_reports is None:
+        annual_reports = _annual_reports_for_display(result)
+    years.update(report.year for report in annual_reports if report.year is not None)
     selected_year = (
         financial_year if financial_year is not None else max(years) if years else None
     )
@@ -164,7 +245,9 @@ def _display_result(client: Handelsregister, result: dict, financial_year: Optio
     summary = client._format_flat_result(result)
     deep = ShareholdersDeep.from_payload(result.get("shareholders_deep"))
     capital = CapitalInfo.from_payload(result.get("capital")).current
-    selected_year, financial_rows, activity_tables = _financial_display(result, financial_year)
+    annual_reports = _annual_reports_for_display(result)
+    selected_year, financial_rows, activity_tables = _financial_display(result, financial_year, annual_reports)
+    audit_tables = _audit_display(annual_reports, selected_year)
     shareholder_rows = []
     for entry in deep.entries:
         ranges = []
@@ -274,6 +357,13 @@ def _display_result(client: Handelsregister, result: dict, financial_year: Optio
             group_items.append(management_table)
         if financial_table and financial_table.row_count:
             group_items.append(financial_table)
+        for title, rows in audit_tables:
+            audit_table = Table(title=Text(title), show_header=False)
+            audit_table.add_column("Field", no_wrap=True)
+            audit_table.add_column("Value")
+            for label, value in rows:
+                audit_table.add_row(Text(label), Text(value))
+            group_items.append(audit_table)
         for title, rows in activity_tables:
             activity_table = Table(title=title)
             activity_table.add_column("Account")
@@ -310,6 +400,10 @@ def _display_result(client: Handelsregister, result: dict, financial_year: Optio
         if financial_rows:
             print(f"Financials {selected_year}:")
             for name, value in financial_rows:
+                print(f"{name}: {value}")
+        for title, rows in audit_tables:
+            print(title + ":")
+            for name, value in rows:
                 print(f"{name}: {value}")
         for title, rows in activity_tables:
             print(title + ":")
@@ -507,7 +601,7 @@ def _main():
     fetch_parser.add_argument("--realtime-mode", dest="realtime_mode")
     fetch_parser.add_argument(
         "--financial-year", type=int,
-        help="Financial year to display, including Max activity statements (default: latest). Does not change the API request.",
+        help="Financial year to display, including annual-report audits and Max activity statements (default: latest). Does not change the API request.",
     )
 
     person_parser = subparsers.add_parser("person", help="Fetch a person profile")
@@ -761,7 +855,8 @@ def _main():
                     realtime_mode=realtime_mode,
                 )
         else:
-            print("Fetching data...", flush=True)
+            if not output_json:
+                print("Fetching data...", flush=True)
             result = client.fetch_organization(
                 q=query_string,
                 features=features,

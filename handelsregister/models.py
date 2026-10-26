@@ -145,6 +145,181 @@ class CapitalInfo:
 
 
 @dataclass
+class AuditorNetwork:
+    """Auditor network identity, when reported; keys are open-ended."""
+
+    key: Optional[str] = None
+    name: Optional[str] = None
+    raw: Dict[str, Any] = field(default_factory=dict)
+
+    @classmethod
+    def from_payload(cls, payload: Any) -> "AuditorNetwork":
+        data = _dict(payload)
+        return cls(key=data.get("key"), name=data.get("name"), raw=data)
+
+    def as_dict(self) -> Dict[str, Any]:
+        return self.raw
+
+
+@dataclass
+class AuditSignatory:
+    """One signing auditor, preserving the name exactly as reported."""
+
+    name: Optional[str] = None
+    academic_title: Optional[str] = None
+    qualification: Optional[str] = None
+    raw: Dict[str, Any] = field(default_factory=dict)
+
+    @classmethod
+    def from_payload(cls, payload: Any) -> "AuditSignatory":
+        data = _dict(payload)
+        return cls(
+            name=data.get("name"),
+            academic_title=data.get("academic_title"),
+            qualification=data.get("qualification"),
+            raw=data,
+        )
+
+    def as_dict(self) -> Dict[str, Any]:
+        return self.raw
+
+
+@dataclass
+class AuditorInfo:
+    """Audit firm or individual auditors; no firm identity is inferred.
+
+    Observed types include ``FIRM`` and ``INDIVIDUAL_AUDITORS``. Names,
+    entity IDs and networks can be absent even when signatories are known.
+    """
+
+    name: Optional[str] = None
+    type: Optional[str] = None
+    entity_id: Optional[str] = None
+    network: Optional[AuditorNetwork] = None
+    signatories: List[AuditSignatory] = field(default_factory=list)
+    raw: Dict[str, Any] = field(default_factory=dict)
+
+    @classmethod
+    def from_payload(cls, payload: Any) -> "AuditorInfo":
+        data = _dict(payload)
+        return cls(
+            name=data.get("name"),
+            type=data.get("type"),
+            entity_id=data.get("entity_id"),
+            network=(
+                AuditorNetwork.from_payload(data["network"])
+                if isinstance(data.get("network"), dict) else None
+            ),
+            signatories=[
+                AuditSignatory.from_payload(item)
+                for item in _list(data.get("signatories"))
+                if isinstance(item, dict)
+            ],
+            raw=data,
+        )
+
+    def as_dict(self) -> Dict[str, Any]:
+        return self.raw
+
+
+@dataclass
+class AuditSignature:
+    """Place and ISO date of the audit signature, not the publication date."""
+
+    place: Optional[str] = None
+    date: Optional[str] = None
+    raw: Dict[str, Any] = field(default_factory=dict)
+
+    @classmethod
+    def from_payload(cls, payload: Any) -> "AuditSignature":
+        data = _dict(payload)
+        return cls(place=data.get("place"), date=data.get("date"), raw=data)
+
+    def as_dict(self) -> Dict[str, Any]:
+        return self.raw
+
+
+@dataclass
+class AuditInfo:
+    """Document-level audit metadata with open-ended kind and subject values.
+
+    Missing ``audited`` is unknown (``None``), never implicitly false.
+    """
+
+    kind: Optional[str] = None
+    subject: Optional[str] = None
+    audited: Optional[bool] = None
+    accounting_framework: Optional[str] = None
+    auditor: Optional[AuditorInfo] = None
+    signed: Optional[AuditSignature] = None
+    raw: Dict[str, Any] = field(default_factory=dict)
+
+    @classmethod
+    def from_payload(cls, payload: Any) -> "AuditInfo":
+        data = _dict(payload)
+        return cls(
+            kind=data.get("kind"),
+            subject=data.get("subject"),
+            audited=data.get("audited"),
+            accounting_framework=data.get("accounting_framework"),
+            auditor=(
+                AuditorInfo.from_payload(data["auditor"])
+                if isinstance(data.get("auditor"), dict) else None
+            ),
+            signed=(
+                AuditSignature.from_payload(data["signed"])
+                if isinstance(data.get("signed"), dict) else None
+            ),
+            raw=data,
+        )
+
+    def as_dict(self) -> Dict[str, Any]:
+        return self.raw
+
+
+@dataclass
+class AnnualFinancialStatement:
+    """One Markdown or HTML report, its metadata and optional audit.
+
+    Several reports may share a year. Audit information belongs to this
+    document, not to the company's KPI or account-tree entries. A null or
+    missing audit means no audit information was returned, not an unaudited
+    opinion. ``raw`` and ``as_dict()`` retain unknown fields and nulls.
+    """
+
+    year: Optional[int] = None
+    document_type: Optional[str] = None
+    document_title: Optional[str] = None
+    document_date: Optional[str] = None
+    language: Optional[str] = None
+    document_md: Optional[str] = None
+    document_html: Optional[str] = None
+    audit: Optional[AuditInfo] = None
+    raw: Dict[str, Any] = field(default_factory=dict)
+
+    @classmethod
+    def from_payload(cls, payload: Any) -> "AnnualFinancialStatement":
+        data = _dict(payload)
+        return cls(
+            year=data.get("year"),
+            document_type=data.get("document_type"),
+            document_title=data.get("document_title"),
+            document_date=data.get("document_date"),
+            language=data.get("language"),
+            document_md=data.get("document_md"),
+            document_html=data.get("document_html"),
+            audit=(
+                AuditInfo.from_payload(data["audit"])
+                if isinstance(data.get("audit"), dict) else None
+            ),
+            raw=data,
+        )
+
+    def as_dict(self) -> Dict[str, Any]:
+        return self.raw
+
+
+@dataclass
 class FinancialProvenance:
     """All-tier source metadata for financial years and activity statements."""
 

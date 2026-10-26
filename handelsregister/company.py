@@ -6,6 +6,7 @@ from .client import Handelsregister
 from .exceptions import HandelsregisterError
 from .models import (
     ActivityStatement,
+    AnnualFinancialStatement,
     CapitalInfo,
     FinancialStatement,
     MergersAndAcquisitions,
@@ -842,6 +843,38 @@ class Company:
                 return item
         return {}
 
+    @property
+    def annual_financial_statement_entries(self) -> List[AnnualFinancialStatement]:
+        """Typed Markdown reports with document-level audits, in API order."""
+        return [
+            AnnualFinancialStatement.from_payload(row)
+            for row in self.annual_financial_statements if isinstance(row, dict)
+        ]
+
+    @property
+    def annual_financial_statement_html_entries(self) -> List[AnnualFinancialStatement]:
+        """Typed HTML reports with the same metadata and audits as Markdown."""
+        return [
+            AnnualFinancialStatement.from_payload(row)
+            for row in self.annual_financial_statements_html if isinstance(row, dict)
+        ]
+
+    def get_annual_financial_statement_entries_for_year(
+        self, year: int, html: bool = False
+    ) -> List[AnnualFinancialStatement]:
+        """All reports for a year in API order, including distinct report types."""
+        entries = (
+            self.annual_financial_statement_html_entries
+            if html else self.annual_financial_statement_entries
+        )
+        return [entry for entry in entries if entry.year == year]
+
+    def get_annual_financial_statement_entry_for_year(
+        self, year: int, html: bool = False
+    ) -> Optional[AnnualFinancialStatement]:
+        """First typed report for a year, or None; use the plural helper for all."""
+        return next(iter(self.get_annual_financial_statement_entries_for_year(year, html)), None)
+
     # --------------------------------
     # Insolvency, news, website
     # --------------------------------
@@ -937,6 +970,16 @@ class Company:
         
         # Add years from profit and loss accounts
         years.extend([item.get("year") for item in self.profit_and_loss_account if item.get("year")])
+
+        # Annual reports can be requested independently of KPIs and accounts.
+        years.extend(
+            entry.year
+            for entry in (
+                self.annual_financial_statement_entries
+                + self.annual_financial_statement_html_entries
+            )
+            if entry.year is not None
+        )
         
         # Remove duplicates and sort descending
         return sorted(list(set(years)), reverse=True)

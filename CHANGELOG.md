@@ -2,6 +2,22 @@
 
 All notable changes to the Python package are documented here.
 
+## 0.10.0 - 2026-10-26
+
+- Add lossless typed annual reports and nested audit models for firms,
+  individual auditors, networks, signatories, and signing details.
+- Add typed Markdown/HTML report collections and singular/plural year
+  helpers; include annual-report years in `Company.financial_years` while
+  preserving existing raw dictionary interfaces.
+- Display document-level audits in Rich and plain CLI output, with local
+  year selection and matching Markdown/HTML copies displayed once. Keep
+  missing audit information distinct from an explicit false audit status.
+- Preserve compact audit metadata alongside full reports in CSV/Excel
+  enrichment, including null audits and distinct documents in the same year.
+- Keep plain-mode `fetch json` output valid JSON by suppressing progress text.
+- Add an audit example, offline contract/export tests, and an opt-in live
+  annual-report audit check.
+
 ## 0.9.0 - 2026-10-02
 
 - Add the Max-only `shareholders_deep` feature and lossless typed models for

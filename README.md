@@ -15,7 +15,7 @@ A modern Python client for the [Handelsregister.ai](https://handelsregister.ai) 
 - **Signals** — cursor-paginated company changes with topic, company, and date filters
 - **Monitoring & webhooks** — per-company monitors with signed webhook push, endpoint lifecycle, and receiver-side signature verification
 - **Account** — profile, credits, usage, subscription, and API-key management
-- **Financial data** — KPIs, balance sheet, P&L, full annual reports (MD/HTML)
+- **Financial data** — KPIs, balance sheet, P&L, full annual reports (MD/HTML) with typed audit information
 - **Management** — current and past related persons with roles
 - **Shareholders, UBOs, shareholdings** — who owns the company, who the company owns
 - **Mergers & acquisitions** — transactions, succession, enterprise agreements, and control relationships
@@ -855,8 +855,8 @@ $ handelsregister webhooks events
 | `financial_kpi`                      | Yearly revenue, net income, employees, …                      |
 | `balance_sheet_accounts`             | Hierarchical balance sheet data                               |
 | `profit_and_loss_account`            | Profit & loss statements                                      |
-| `annual_financial_statements`        | Full annual reports as Markdown                               |
-| `annual_financial_statements__html`  | Full annual reports as HTML                                   |
+| `annual_financial_statements`        | Full annual reports as Markdown, including audit metadata      |
+| `annual_financial_statements__html`  | Full annual reports as HTML, including audit metadata          |
 | `publications`                       | Official Handelsregister publications                         |
 | `insolvency_publications`            | Insolvency court publications                                 |
 | `news`                               | News articles about the company                               |
@@ -927,6 +927,8 @@ company.balance_sheet_accounts
 company.profit_and_loss_account
 company.annual_financial_statements
 company.annual_financial_statements_html
+company.annual_financial_statement_entries       # typed documents + optional AuditInfo
+company.annual_financial_statement_html_entries
 company.get_financial_kpi_for_year(2023)
 company.get_balance_sheet_for_year(2023)
 company.get_profit_and_loss_for_year(2023)
@@ -936,6 +938,8 @@ company.get_activity_balance_sheets_for_year(2023)  # Max: list[ActivityStatemen
 company.get_activity_profit_and_loss_for_year(2023)
 company.get_annual_financial_statement_for_year(2023)  # Markdown
 company.get_annual_financial_statement_for_year(2023, html=True)
+company.get_annual_financial_statement_entry_for_year(2023)  # first typed report or None
+company.get_annual_financial_statement_entries_for_year(2023, html=True)  # all reports
 
 # People & ownership
 company.current_related_persons
@@ -1111,6 +1115,93 @@ The complete text is split across the **Long values** worksheet, with `row`
 (the main-sheet Excel row), `column`, `part`, and `value`. Concatenate the
 matching `value` cells in `part` order before decoding JSON. Small exports
 retain their existing single-cell format; CSV and JSON preserve values directly.
+
+### Annual-report audits
+
+Request `annual_financial_statements` (Markdown) or
+`annual_financial_statements__html` (HTML) to receive document-level `audit`
+metadata. Each feature costs 5 credits when data is returned, plus the
+5-credit lookup; audits need no additional flag. Both formats have the same
+metadata. See the [financial statements reference](https://handelsregister.ai/de/documentation/data-financial-statements).
+
+```python
+from handelsregister import Company, OrganizationFeature
+
+company = Company(
+    "KONUX GmbH",
+    features=[OrganizationFeature.ANNUAL_FINANCIAL_STATEMENTS],
+    financial_years=5,  # optional: forwarded to the API
+)
+for report in company.get_annual_financial_statement_entries_for_year(2024):
+    print(report.document_type, report.document_title, report.document_date)
+    audit = report.audit
+    if audit is None:
+        print("No audit information returned")
+        continue
+    print(audit.kind, audit.subject, audit.audited, audit.accounting_framework)
+    if audit.auditor is not None:
+        auditor = audit.auditor
+        print(auditor.name, auditor.type, auditor.entity_id)
+        if auditor.network is not None:
+            print(auditor.network.key, auditor.network.name)
+        for signer in auditor.signatories:
+            print(signer.academic_title, signer.name, signer.qualification)
+    if audit.signed is not None:
+        print(audit.signed.place, audit.signed.date)
+```
+
+`AnnualFinancialStatement` exposes document metadata, `document_md` or
+`document_html`, and optional `AuditInfo`. Nested models are `AuditorInfo`,
+`AuditorNetwork`, `AuditSignatory`, and `AuditSignature`, all importable from
+`handelsregister`. Every model retains the complete original payload in
+`.raw` / `.as_dict()`, including unknown fields. Dates remain API strings.
+
+Auditor types include `FIRM` and `INDIVIDUAL_AUDITORS`. The latter can have
+signatories with no firm name or network. Entity IDs, academic titles, and
+other nested fields can be null. Kind, subject, framework, type, and network
+keys are open-ended strings. A missing or null `audit` becomes `None`; it
+does **not** imply `audited=False`. Missing `audited` remains `None` too.
+The signing date is distinct from the report's publication date.
+
+The existing raw properties and year helper keep their dictionary return
+types. Typed collections retain API order and separate reports sharing a
+year (for example, annual and consolidated reports). The singular typed
+year helper returns the first match or `None`; the plural helper returns all
+matches or `[]`. Pass `html=True` for the HTML collection.
+`company.financial_years` includes annual-report years even when no KPIs or
+account trees were requested. Audits are not attached to those account trees.
+
+With `HANDELSREGISTER_API_KEY` set, display audits in the CLI:
+
+```bash
+handelsregister fetch "KONUX GmbH" \
+    --feature annual_financial_statements \
+    --financial-year 2024 --ai-search off
+python examples/audit_example.py "KONUX GmbH" --year 2024
+```
+
+The CLI shows audit tables in Rich and plain output, including individual
+signatories when no firm is known. It defaults to the latest returned
+financial year. `--financial-year` selects locally and leaves the API
+request and `fetch json` output unchanged. Distinct documents in that year
+remain separate; matching Markdown/HTML copies display once. Missing audits
+display as “Not available”, without an inferred audit status.
+
+Enrichment keeps full reports intact in JSON, CSV, Excel, and DataFrames.
+CSV/Excel also expose `hr_annual_financial_statements_audit` and
+`hr_annual_financial_statements__html_audit` JSON columns when the corresponding
+reports contain an `audit` key. Each entry retains all document metadata and
+the full audit, excluding the report body. Explicit null audits are kept;
+legacy documents without that key do not add audit entries. Large reports
+use the Excel overflow mechanism described above.
+
+Offline audit coverage is in `tests/test_audits.py`. To opt into the live
+contract check (up to 15 credits for both report formats):
+
+```bash
+HANDELSREGISTER_RUN_AUDIT_TESTS=1 python -m pytest \
+    tests/test_live_api.py -m live_api -k annual_report_audits
+```
 
 ## `Person` properties
 

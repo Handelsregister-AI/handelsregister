@@ -719,6 +719,11 @@ class Handelsregister:
         include ``activity_statements`` within each year. No extra flag or
         surcharge is needed; these features each cost 3 credits on all plans.
 
+        ``annual_financial_statements`` and its ``__html`` variant include
+        document-level ``audit`` metadata (or null when unavailable). No
+        additional feature flag is required. ``financial_statement_type``
+        and ``financial_years`` can be forwarded through ``kwargs``.
+
         :param ai_search: Pass ``"on-default"`` to enable AI-based search.
         :param realtime_mode: Pass ``"handelsregister-default"`` to enable live
                               lookups against the Handelsregister (+10 credits).
@@ -2391,7 +2396,7 @@ class Handelsregister:
 
     @staticmethod
     def _write_enrichment_excel(df, output_file: str) -> None:
-        """Keep large activity JSON intact beyond Excel's per-cell limit.
+        """Keep large reports and nested JSON intact beyond Excel's cell limit.
 
         Oversized strings are stored in ordered chunks on ``Long values``.
         Their main-sheet cells contain a JSON reference with the Excel row,
@@ -2676,6 +2681,22 @@ class Handelsregister:
                         sort_keys=True,
                         separators=(",", ":"),
                     )
+
+        # Keep audits accessible without parsing the full report body. Retain
+        # document identity because several reports can share a financial year.
+        for feature in ("annual_financial_statements", "annual_financial_statements__html"):
+            rows = result.get(feature)
+            if not isinstance(rows, list):
+                continue
+            audits = [
+                {key: value for key, value in row.items() if key not in {"document_md", "document_html"}}
+                for row in rows
+                if isinstance(row, dict) and "audit" in row
+            ]
+            if audits:
+                flat[f"{feature}_audit"] = json.dumps(
+                    audits, ensure_ascii=False, sort_keys=True, separators=(",", ":"),
+                )
 
         history = result.get("history")
         if history:

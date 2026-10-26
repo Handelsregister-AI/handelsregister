@@ -68,6 +68,10 @@ recursive-exclude docs/site *
 exclude local_settings.py
 exclude settings_local.py
 recursive-exclude .private *
+recursive-exclude .claude *
+recursive-exclude .codex *
+recursive-exclude .agents *
+recursive-exclude .aws *
 
 # -----------------------------------------------------------------------------
 # Cached files
